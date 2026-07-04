@@ -25,16 +25,19 @@ from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, Field, ConfigDict
+## ConfigDict : “모델 설정값”을 담는 도구(검사 규칙 묶음)
+## BaseModel이 정의한 클래스의 데이터 구조를 어떤 규칙으로 검사하고 처리할지 정하는 설정을 저장한다.
+
 from langchain_core.prompts import ChatPromptTemplate
 from langgraph.graph import StateGraph, START, END
 
 # 프로젝트의 전체 State 타입을 가져온다.
-# 이 파일은 state/news_chart_check_state.py에 정의되어 있다고 가정한다.
+# state/news_chart_check_state.py에 정의되어 있다.
 from state.news_chart_check_state import NewsChartCheckState
 
 
 # ============================================================
-# 1. 허용되는 최종 판정값
+# 허용되는 최종 판정값
 # ============================================================
 
 # vc_에이전트가 추천할 수 있는 최종 판정은 반드시 아래 4개 중 하나여야 한다.
@@ -48,7 +51,7 @@ ALLOWED_JUDGEMENTS = {
 
 
 # ============================================================
-# 2. 위험 표현 목록
+# 위험 표현 목록
 # ============================================================
 
 # 최종 사용자에게 그대로 보여주면 너무 강하게 단정하는 표현들이다.
@@ -78,10 +81,11 @@ SAFE_EXPRESSION_MAP = {
 
 
 # ============================================================
-# 3. LLM 출력 스키마
+# LLM 출력 스키마
 # ============================================================
 
 class VerdictCriticOutput(BaseModel):
+## 애이전트의 출력 형식을 이하와 같이 규정한다.
     """
     LLM이 반드시 이 구조로 답하게 만드는 출력 스키마.
 
@@ -102,12 +106,16 @@ class VerdictCriticOutput(BaseModel):
     #
     # 하지만 이 에이전트는 최종 판정 검토용이므로,
     # 잘못된 타입은 억지로 고치기보다 fallback으로 보내는 편이 안전하다.
+
+    
     model_config = ConfigDict(strict=True)
+    ## ConfigDict 모듈로 해당 Pydantic 모델 전체를 “엄격 검사 모드”로 설정(strict=True)한다
 
     # 일부러 Literal이 아니라 str로 받는다.
     # LLM이 "대체로 맞음" 같은 허용되지 않은 판정명을 내더라도
     # 스키마 단계에서 바로 실패시키지 않고,
     # apply_vc_guardrails()에서 "검증 제한"으로 보정하기 위해서다.
+
     vc_recommended_judgement: str = Field(
         description=(
             "추천 최종 판정. "
@@ -140,11 +148,15 @@ class VerdictCriticOutput(BaseModel):
 # ============================================================
 
 def normalize_llm_result(result: Any) -> dict[str, Any]:
+## LLM이 출력하는 구조화된 결과(result)를
+## model_validate로 검증하고 (model_validate : Pydantic 모델(VerdictCriticOutput) 형식에 맞는지 검증)
+## model_dump 메서드로 검증한 결과(result)를 일반 Python 딕셔너리로 꺼내기
+
     """
     LLM structured output 결과를 항상 같은 방식으로 검증하고 dict로 변환한다.
 
     왜 필요한가?
-    - 현재 코드에서는 result가 Pydantic 객체면 model_dump()를 사용하고,
+    - 이전 코드에서는 result가 Pydantic 객체면 model_dump()를 사용하고,
       result가 dict면 그대로 raw_output으로 사용했다.
     - 하지만 dict를 그대로 믿으면 잘못된 타입이 통과할 수 있다.
 
@@ -170,9 +182,55 @@ def normalize_llm_result(result: Any) -> dict[str, Any]:
     # 이후 후처리 함수 apply_vc_guardrails()가 다루기 쉽도록 dict로 변환한다.
     return validated_result.model_dump()
 
+# ============================================================
+# LLM 실패 시 사용할 안전한 기본 출력
+# ============================================================
+
+def make_safe_fallback_output(reason: str) -> dict[str, Any]:
+## LLM 호출이 실패해서 검증이 제한된다는 결과를 출력하는 함수
+## 오류 발생으로 인한 검증 제한 이라는 내용의 이유를 받아
+## 출력 형식 중 vc_revision_reason의 값으로 저장하고 결과 출력
+    """
+    LLM 호출 실패 또는 구조화 출력 실패 시 사용할 안전한 기본 결과.
+
+    왜 필요한가?
+    - LLM API 오류가 날 수 있다.
+    - structured output 파싱이 실패할 수 있다.
+    - 모델이 예상과 다른 형식으로 답할 수 있다.
+
+    이때 노드 전체가 실패하면 LangGraph 실행이 중단된다.
+    따라서 가장 보수적인 판정인 '검증 제한'으로 안전하게 대체한다.
+    """
+
+    return {
+        # 실패 상황에서는 강한 판정을 내리면 안 되므로 '검증 제한'을 사용한다.
+        "vc_recommended_judgement": "검증 제한",
+
+        # LLM 호출 자체가 실패한 것이므로, 여기서는 위험 표현을 직접 발견한 것은 아니다.
+        # 이후 apply_vc_guardrails()에서 ce_, input_의 위험 표현은 다시 검사한다.
+        "vc_unsafe_expressions": [],
+
+        # 정상 생성이 아니므로 수정 필요 True
+        "vc_revision_needed": True,
+
+        # 실패 이유를 사람이 이해할 수 있게 남긴다.
+        "vc_revision_reason": reason,
+
+        # 사용자에게 보여줄 수 있는 안전한 표현
+        "vc_safe_expression": (
+            "현재 제공된 정보만으로는 최종 판정을 안정적으로 생성하기 어렵습니다."
+        ),
+
+        # 내부 검토 메모
+        "vc_critic_notes": (
+            "LLM 호출 또는 구조화 출력 처리 중 문제가 발생해 "
+            "안전한 기본 판정으로 대체했습니다."
+        ),
+    }
+
 
 # ============================================================
-# 4. 프롬프트 파일 로딩
+# 프롬프트 파일 로딩
 # ============================================================
 
 def load_verdict_critic_prompt() -> str:
@@ -189,16 +247,29 @@ def load_verdict_critic_prompt() -> str:
     """
 
     project_root = Path(__file__).resolve().parents[1]
+    ## __file__ : 현재 코드가 들어 있는 파이썬 파일의 경로
+    ## Path() : 경로 정보를 쉽게 다루기 위한 객체
+    ## resolve() : 해당 경로를 절대 경로로 정리하는 메서드
+
     prompt_path = project_root / "prompts" / "verdict_critic_prompt.md"
+    ## 여기서 / 는 경로 연결 연산자이다.
 
     return prompt_path.read_text(encoding="utf-8")
+    ## prompt_path를 utf-8 로 읽어서 출력한다.
 
 
 # ============================================================
-# 5. State에서 LLM에게 전달할 입력 만들기
+# State에서 LLM에게 전달할 입력 만들기
 # ============================================================
 
 def build_verdict_input(state: NewsChartCheckState) -> str:
+## NewsChartCheckState를 state로 선언하고 필요한 요소만 모아 문자열로 출력한다
+## vc_에이전트가 읽어도 되는 값만을 필요한 요소로 정한다
+## - input_ 변수의 값(원본 입력 정보)
+## - ce_ 변수(claim_evidence_agent 결과)
+## - ig_ 변수(info_gap_agent 결과)
+## LLM이 vc_ 변수(verdict_critic_agent 결과)만 작성하도록 지시한다.
+
     """
     전체 state 중에서 vc_에이전트가 읽어도 되는 값만 모아
     LLM에게 전달할 텍스트를 만든다.
@@ -271,6 +342,12 @@ def build_verdict_input(state: NewsChartCheckState) -> str:
 
 위 정보를 바탕으로 최종 판정이 너무 강하게 단정되지 않았는지 검토하세요.
 
+정보 부족은 핵심 부족과 보조 부족으로 구분하세요.
+- 출처, 기간, 단위, 시각자료 수치, 비교 기준, 조사 대상, 표본 수, 차트 제목, 축 설명이 여러 개 부족하면 핵심 부족으로 볼 수 있습니다.
+- 지역별 분포, 이용률, 세부 항목별 차이, 추가 세부 통계, 장기 시계열, 업종별 세부 자료만 부족한 경우에는 보조 부족입니다.
+- 보조 부족 정보만 있다는 이유로 '대체로 뒷받침됨'을 '검증 제한'으로 낮추지 마세요.
+- ig_limitation_reason에 일반적인 주의 문구가 있다는 사실만으로 검증 제한을 선택하지 말고, 실제 ig_missing_info와 차트 사실을 함께 확인하세요.
+
 반드시 아래 vc_ 변수만 작성하세요.
 
 - vc_recommended_judgement
@@ -281,11 +358,13 @@ def build_verdict_input(state: NewsChartCheckState) -> str:
 - vc_critic_notes
 """
 
+
 # ============================================================
-# 6-1. 중복 제거 함수
+# 중복 제거 함수
 # ============================================================
 
 def ordered_unique(items: list[str]) -> list[str]:
+    ## - items 내의 요소들을 중복만 제거하여 출력
     """
     list(set(...))을 쓰면 순서가 매번 달라질 수 있다.
 
@@ -294,20 +373,32 @@ def ordered_unique(items: list[str]) -> list[str]:
     """
 
     result = []
+    ## 출력할 결과 리스트 생성
     seen = set()
+    ## 중복 여부를 확인할 세트 생성
 
     for item in items:
+    ## items 내의 요소를 하나씩 item에 저장, 이하 내용을 반복
         if item not in seen:
+        ## item이 seen 내에 없다면
+        ## - item이 items내의 중복 요소가 아니라면
             result.append(item)
+            ## result에 item 추가
             seen.add(item)
+            ## seen에 item 추가
 
     return result
 
+
 # ============================================================
-# 6-2. 위험 표현 탐지 함수
+# 위험 표현 탐지 함수
 # ============================================================
 
 def find_unsafe_expressions_in_text(text: Any) -> list[str]:
+## 문자열 리스트를 생성한 후,
+## UNSAFE_EXPRESSIONS 내의 단어가 입력받은 텍스트 내에 있으면
+## 생성한 문자열 리스트에 추가하고 
+## 문자열 리스트 출력
     """
     하나의 값 안에서 위험 표현을 찾는다.
 
@@ -322,10 +413,13 @@ def find_unsafe_expressions_in_text(text: Any) -> list[str]:
 
     if text is None:
         return []
+    ## 입력값이 없으면 빈 리스트 출력
 
     text = str(text)
+    ## 검사를 위해 입력값을 문자열로 저장
 
     found = []
+    ## 출력용 리스트 생성
 
     for expression in UNSAFE_EXPRESSIONS:
         if expression in text:
@@ -333,8 +427,10 @@ def find_unsafe_expressions_in_text(text: Any) -> list[str]:
 
     return found
 
+## ----------------------------------- -> 여기까지 코드 리뷰 완료
 
 def find_unsafe_expressions(*values: Any) -> list[str]:
+## 여러 개의 값을 받아 각각 위험 표현을 받는다.
     """
     여러 개의 값에서 위험 표현을 찾는다.
 
@@ -350,6 +446,7 @@ def find_unsafe_expressions(*values: Any) -> list[str]:
 
     for value in values:
         found.extend(find_unsafe_expressions_in_text(value))
+        ## values 내 요소마다 find_unsafe_expressions_in_text 메서드에 입력하고 결과를 found에 추가
 
     return ordered_unique(found)
 
@@ -438,18 +535,119 @@ def has_meaningful_value(value: Any) -> bool:
     return bool(value)
 
 
-def has_info_gap(state: dict[str, Any]) -> bool:
-    """
-    info_gap_agent 결과를 보고 실제 정보 부족이 있는지 판단한다.
+CORE_MISSING_INFO_KEYWORDS = (
+    "출처",
+    "기간",
+    "단위",
+    "시각자료 수치",
+    "차트 수치",
+    "비교 기준",
+    "조사 대상",
+    "표본 수",
+    "표본수",
+    "차트 제목",
+    "축 설명",
+)
 
-    이 함수가 True이면,
-    '왜곡 가능성 높음' 같은 강한 판정을 '검증 제한'으로 낮추는 근거가 된다.
-    """
+AUXILIARY_MISSING_INFO_KEYWORDS = (
+    "지역별 분포",
+    "이용률",
+    "세부 항목별",
+    "추가 세부 통계",
+    "장기 시계열",
+    "업종별",
+    "세부 자료",
+)
 
-    return (
-        has_meaningful_value(state.get("ig_missing_info"))
-        or has_meaningful_value(state.get("ig_limitation_reason"))
+
+def normalize_missing_info_items(value: Any) -> list[str]:
+    """ig_missing_info를 비어 있지 않은 문자열 목록으로 정규화한다."""
+    if isinstance(value, list | tuple | set):
+        return [str(item).strip() for item in value if has_meaningful_value(item)]
+    if has_meaningful_value(value):
+        return [str(value).strip()]
+    return []
+
+
+def classify_missing_info(state: dict[str, Any]) -> tuple[list[str], list[str]]:
+    """누락 항목을 핵심 검증 정보와 보조 확인 정보로 나눈다."""
+    core_items: list[str] = []
+    auxiliary_items: list[str] = []
+
+    for item in normalize_missing_info_items(state.get("ig_missing_info")):
+        # '장기 시계열'처럼 보조 항목에 명시된 표현은 일반적인 기간 관련
+        # 표현보다 먼저 분류해 과도한 핵심 부족 판정을 피한다.
+        if any(keyword in item for keyword in AUXILIARY_MISSING_INFO_KEYWORDS):
+            auxiliary_items.append(item)
+        elif any(keyword in item for keyword in CORE_MISSING_INFO_KEYWORDS):
+            core_items.append(item)
+        else:
+            auxiliary_items.append(item)
+
+    return core_items, auxiliary_items
+
+
+def has_meaningful_chart_facts(state: dict[str, Any]) -> bool:
+    """경로와 임시 레이블을 제외한 실제 차트 사실이 있는지 확인한다."""
+    facts = str(state.get("ce_chart_facts") or "")
+    removable_texts = [
+        "원본 시각자료 이미지 경로:",
+        "시각자료 보조 설명:",
+        "업로드된 원본 이미지 없음",
+        "입력된 보조 설명 없음",
+    ]
+    image_paths = state.get("input_chart_image_paths")
+    if isinstance(image_paths, list):
+        removable_texts.extend(str(path) for path in image_paths)
+    else:
+        removable_texts.extend(
+            line.strip()
+            for line in str(state.get("input_chart_image_path") or "").splitlines()
+            if line.strip()
+        )
+
+    for text in removable_texts:
+        facts = facts.replace(text, "")
+    return bool(facts.strip())
+
+
+def get_critical_info_gap_reasons(state: dict[str, Any]) -> list[str]:
+    """최종 판정을 실제로 제한할 정도의 핵심 부족 사유만 반환한다."""
+    reasons: list[str] = []
+    metadata_status = str(state.get("ig_metadata_status") or "").strip()
+    core_items, _ = classify_missing_info(state)
+    chart_text = str(state.get("input_chart_text") or "").strip()
+    image_paths = state.get("input_chart_image_paths")
+    has_image_path = (
+        any(str(path).strip() for path in image_paths)
+        if isinstance(image_paths, list)
+        else bool(str(state.get("input_chart_image_path") or "").strip())
     )
+
+    if metadata_status == "검증 제한":
+        reasons.append("메타정보 상태가 명시적으로 검증 제한입니다.")
+    if len(core_items) >= 2:
+        reasons.append("핵심 판단에 필요한 정보가 여러 개 부족합니다.")
+    if not chart_text and has_image_path:
+        reasons.append("이미지는 있으나 실제 수치를 확인할 보조 설명이 없습니다.")
+    if not has_meaningful_chart_facts(state):
+        reasons.append("의미 있는 차트 사실이 확인되지 않습니다.")
+
+    foundational_keywords = ("출처", "기간", "단위", "비교 기준")
+    missing_foundations = {
+        keyword
+        for keyword in foundational_keywords
+        if any(keyword in item for item in core_items)
+    }
+    if len(missing_foundations) >= 3:
+        reasons.append("출처·기간·단위·비교 기준 중 대부분이 부족합니다.")
+
+    return ordered_unique(reasons)
+
+
+def has_info_gap(state: dict[str, Any]) -> bool:
+    """핵심 판단을 제한할 정도의 정보 부족이 있는지 반환한다."""
+    return bool(get_critical_info_gap_reasons(state))
 
 # ============================================================
 # 7. LLM 결과 후처리
@@ -633,7 +831,8 @@ def apply_vc_guardrails(
     # - "주의 필요" → 이미 조심스러운 판정이므로 유지 가능
     # - "검증 제한" → 이미 정보 부족을 반영한 판정이므로 유지
 
-    if has_info_gap(state):
+    critical_gap_reasons = get_critical_info_gap_reasons(state)
+    if critical_gap_reasons:
         current_judgement = output.get("vc_recommended_judgement")
 
         # 정보 부족 상황에서는 양쪽 확신을 모두 낮춘다.
@@ -642,11 +841,16 @@ def apply_vc_guardrails(
             output["vc_recommended_judgement"] = "검증 제한"
             output["vc_revision_needed"] = True
             output["vc_revision_reason"] = (
-                "검증에 필요한 정보가 부족해 확정적인 판정보다 "
+                "핵심 검증에 필요한 정보가 부족해 확정적인 판정보다 "
                 "'검증 제한'이 더 적절합니다."
             )
             output["vc_safe_expression"] = (
                 "현재 제공된 표/차트 정보만으로는 기사 주장을 충분히 검증하기 어렵습니다."
+            )
+            output["vc_critic_notes"] = sanitize_text(
+                output["vc_critic_notes"]
+                + "\n핵심 정보 부족 사유: "
+                + " ".join(critical_gap_reasons)
             )
     # ------------------------------------------------------------
     # 6. revision_needed와 reason의 모순 방지
@@ -708,48 +912,7 @@ def pick_vc_only(output: dict[str, Any]) -> dict[str, Any]:
         for key in vc_keys
     }
 
-# ============================================================
-# 9. LLM 실패 시 사용할 안전한 기본 출력
-# ============================================================
 
-def make_safe_fallback_output(reason: str) -> dict[str, Any]:
-    """
-    LLM 호출 실패 또는 구조화 출력 실패 시 사용할 안전한 기본 결과.
-
-    왜 필요한가?
-    - LLM API 오류가 날 수 있다.
-    - structured output 파싱이 실패할 수 있다.
-    - 모델이 예상과 다른 형식으로 답할 수 있다.
-
-    이때 노드 전체가 실패하면 LangGraph 실행이 중단된다.
-    따라서 가장 보수적인 판정인 '검증 제한'으로 안전하게 대체한다.
-    """
-
-    return {
-        # 실패 상황에서는 강한 판정을 내리면 안 되므로 '검증 제한'을 사용한다.
-        "vc_recommended_judgement": "검증 제한",
-
-        # LLM 호출 자체가 실패한 것이므로, 여기서는 위험 표현을 직접 발견한 것은 아니다.
-        # 이후 apply_vc_guardrails()에서 ce_, input_의 위험 표현은 다시 검사한다.
-        "vc_unsafe_expressions": [],
-
-        # 정상 생성이 아니므로 수정 필요 True
-        "vc_revision_needed": True,
-
-        # 실패 이유를 사람이 이해할 수 있게 남긴다.
-        "vc_revision_reason": reason,
-
-        # 사용자에게 보여줄 수 있는 안전한 표현
-        "vc_safe_expression": (
-            "현재 제공된 정보만으로는 최종 판정을 안정적으로 생성하기 어렵습니다."
-        ),
-
-        # 내부 검토 메모
-        "vc_critic_notes": (
-            "LLM 호출 또는 구조화 출력 처리 중 문제가 발생해 "
-            "안전한 기본 판정으로 대체했습니다."
-        ),
-    }
 
 # ============================================================
 # 10. LangGraph 노드 생성 함수

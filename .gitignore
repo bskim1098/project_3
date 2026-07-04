@@ -16,6 +16,7 @@ env/
 .env
 .env.*
 !.env.example
+temp_uploads/
 
 # IDE
 .vscode/

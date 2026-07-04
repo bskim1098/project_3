@@ -42,6 +42,7 @@ class NewsChartCheckState(TypedDict):
     input_news_title: str
     input_news_body: str
     input_chart_image_path: str
+    input_chart_image_paths: NotRequired[list[str]]
     input_chart_text: str
     input_source_text: str
 
@@ -83,8 +84,15 @@ class NewsChartCheckState(TypedDict):
     # 아직 report_merge_node를 만들지 않았더라도,
     # 나중에 최종 리포트 결과를 담기 위해 자리를 열어둘 수 있다.
 
-    merge_final_report: NotRequired[str]
+    merge_user_facing_judgement: NotRequired[str]
+    merge_judgement_tone: NotRequired[str]
+    merge_headline: NotRequired[str]
     merge_summary: NotRequired[str]
+    merge_issue_cards: NotRequired[list[dict[str, Any]]]
+    merge_evidence_cards: NotRequired[list[dict[str, Any]]]
+    merge_missing_info_cards: NotRequired[list[dict[str, Any]]]
+    merge_recommendations: NotRequired[list[str]]
+    merge_final_report: NotRequired[str]
 
     # ============================================================
     # 6. runtime_ : 실행 중 상태 또는 디버깅용
