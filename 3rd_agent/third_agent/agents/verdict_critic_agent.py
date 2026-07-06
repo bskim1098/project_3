@@ -33,7 +33,7 @@ from langgraph.graph import StateGraph, START, END
 
 # 프로젝트의 전체 State 타입을 가져온다.
 # state/news_chart_check_state.py에 정의되어 있다.
-from third_agent.state.news_chart_check_state import NewsChartCheckState
+from common.state.news_chart_check_state import NewsChartCheckState
 
 
 # ============================================================
