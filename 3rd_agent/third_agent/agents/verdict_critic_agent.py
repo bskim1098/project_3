@@ -33,7 +33,7 @@ from langgraph.graph import StateGraph, START, END
 
 # 프로젝트의 전체 State 타입을 가져온다.
 # state/news_chart_check_state.py에 정의되어 있다.
-from state.news_chart_check_state import NewsChartCheckState
+from third_agent.state.news_chart_check_state import NewsChartCheckState
 
 
 # ============================================================
@@ -64,6 +64,15 @@ UNSAFE_EXPRESSIONS = [
     "완전히 틀림",
     "명백한 허위",
     "절대 믿으면 안 됨",
+    "선동",
+    "악의적 왜곡",
+    "통계 조작",
+    "날조",
+    "허위 보도",
+    "기만",
+    "엉터리",
+    "완전한 오류",
+    "의도적으로 속임",
 ]
 
 
@@ -77,7 +86,39 @@ SAFE_EXPRESSION_MAP = {
     "완전히 틀림": "근거와 차이가 있을 가능성이 있는 주장",
     "명백한 허위": "현재 근거만으로는 확인하기 어려운 주장",
     "절대 믿으면 안 됨": "추가 검증이 필요한 주장",
+    "선동": "주의가 필요한 표현",
+    "악의적 왜곡": "왜곡 가능성이 있는 표현",
+    "통계 조작": "통계 해석에 추가 검증이 필요한 상태",
+    "날조": "현재 근거만으로는 확인하기 어려운 주장",
+    "허위 보도": "현재 근거만으로는 뒷받침하기 어려운 보도",
+    "기만": "오해를 불러올 가능성",
+    "엉터리": "근거가 충분하지 않은 내용",
+    "완전한 오류": "근거와 차이가 있을 가능성",
+    "의도적으로 속임": "의도를 확인하기 어려운 표현",
 }
+
+
+# 변경: LLM이 형식은 맞췄지만 설명 필드를 단답형으로 반환하는 경우를
+# 후처리에서 보정한다. 새로운 vc_ 필드를 만들지 않고 기존 세 필드만 수정한다.
+WEAK_SHORT_ANSWERS = {
+    "예",
+    "아니오",
+    "수정 필요",
+    "수정 불필요",
+    "해당 없음",
+    "없음",
+    "없습니다",
+    "있음",
+    "있습니다",
+}
+
+
+def is_weak_text(value: Any) -> bool:
+    """비어 있거나 설명력이 부족한 단답형인지 확인한다."""
+    if value is None:
+        return True
+    normalized = str(value).strip()
+    return not normalized or normalized in WEAK_SHORT_ANSWERS
 
 
 # ============================================================
@@ -238,10 +279,10 @@ def load_verdict_critic_prompt() -> str:
     prompts/verdict_critic_prompt.md 파일을 읽어온다.
 
     현재 파일 위치:
-    project-root/agents/verdict_critic_agent.py
+    3rd_agent/third_agent/agents/verdict_critic_agent.py
 
     프롬프트 위치:
-    project-root/prompts/verdict_critic_prompt.md
+    3rd_agent/third_agent/prompts/verdict_critic_prompt.md
 
     따라서 __file__ 기준으로 부모 폴더를 따라 올라가서 prompts 폴더를 찾는다.
     """
@@ -734,6 +775,8 @@ def apply_vc_guardrails(
     # - vc_revision_reason, vc_safe_expression, vc_critic_notes에서 실제로 치환한다.
 
     unsafe_in_vc_output = find_unsafe_expressions(
+        output.get("vc_recommended_judgement"),
+        output.get("vc_unsafe_expressions"),
         output.get("vc_revision_reason"),
         output.get("vc_safe_expression"),
         output.get("vc_critic_notes"),
@@ -858,18 +901,26 @@ def apply_vc_guardrails(
     # 수정 필요가 True인데 이유가 비어 있으면 어색하다.
     # 최소한의 기본 이유를 넣는다.
 
-    if output.get("vc_revision_needed") and not output.get("vc_revision_reason"):
+    if is_weak_text(output.get("vc_revision_reason")):
         output["vc_revision_reason"] = (
-            "최종 판정의 표현 강도 또는 근거 수준을 보수적으로 조정할 필요가 있습니다."
+            "최종 판정 또는 표현이 제공된 표/차트 근거보다 강하게 단정될 수 있어 "
+            "더 신중한 표현으로 수정이 필요합니다."
         )
 
     # ------------------------------------------------------------
     # 7. 안전 표현이 비어 있으면 기본 문구 제공
     # ------------------------------------------------------------
 
-    if not output.get("vc_safe_expression"):
+    if is_weak_text(output.get("vc_safe_expression")):
         output["vc_safe_expression"] = (
-            "현재 근거만으로는 단정하기 어렵고, 추가 검증이 필요합니다."
+            "현재 제공된 표/차트 근거만으로는 단정하기 어려우므로, "
+            "추가 검증이 필요하다는 표현이 더 적절합니다."
+        )
+
+    if is_weak_text(output.get("vc_critic_notes")):
+        output["vc_critic_notes"] = (
+            "검토 결과, 사용자가 이해할 수 있도록 수정 필요 사유를 "
+            "구체적인 문장으로 제시하는 것이 적절합니다."
         )
 
     # 마지막으로 한 번 더 정화한다.
@@ -924,7 +975,7 @@ def make_verdict_critic_node(llm):
 
     왜 바로 node 함수를 만들지 않고 make_ 함수를 쓰는가?
     - llm 객체를 외부에서 주입받기 위해서다.
-    - 이렇게 하면 OpenAI 모델, 로컬 모델, 테스트용 fake 모델로 쉽게 바꿀 수 있다.
+    - 이렇게 하면 OpenAI 모델이나 호환 가능한 로컬 모델로 교체하기 쉽다.
 
     사용 예:
     graph = build_verdict_critic_graph(llm)

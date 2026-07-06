@@ -1,9 +1,12 @@
 # 실행:
-# uv run --active streamlit run frontend/streamlit_app.py
+# C:\THIRD_LLM에서 실행:
+# uv run streamlit run frontend/streamlit_app.py
 
 """verdict_critic_agent 기반 데이터 체커 서비스형 데모."""
 
+import logging
 import sys
+from hashlib import sha256
 from html import escape
 from pathlib import Path
 from pprint import pformat
@@ -12,6 +15,8 @@ from typing import Any
 from uuid import uuid4
 
 
+# 협업 프론트엔드는 저장소 최상위에 둔다. 실행 위치와 관계없이 공용 임시 파일과
+# 설정의 기준이 C:\THIRD_LLM이 되도록 저장소 루트를 계산한다.
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -20,8 +25,31 @@ import streamlit as st
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 
-from agents.verdict_critic_agent import make_verdict_critic_node
-from nodes.report_merge_node import build_service_report
+from third_agent.agents.verdict_critic_agent import (
+    build_verdict_critic_graph,
+    pick_vc_only,
+)
+from frontend.html_ingestion import (
+    AccessRestrictedError,
+    ImageCandidate,
+    download_image_from_url,
+    extract_text_blocks_from_html,
+    fetch_html_from_url,
+    get_ingestion_error_message,
+    prefill_form_from_text_blocks,
+    read_html_from_upload,
+    summarize_extraction,
+)
+from frontend.ingestion_outcome import (
+    IngestionOutcome,
+    build_failure_outcome,
+    classify_extraction_outcome,
+)
+from frontend.technology_architecture import get_technology_architectures
+from third_agent.nodes.report_merge_node import build_service_report
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 # verdict_critic_agent와 화면의 판정 선택지가 서로 달라지지 않도록
@@ -32,6 +60,97 @@ JUDGEMENTS = (
     "검증 제한",
     "왜곡 가능성 높음",
 )
+
+FORM_FIELD_KEYS = {
+    "news_title": "form_news_title",
+    "news_body": "form_news_body",
+    "chart_text": "form_chart_text",
+    "source_text": "form_source_text",
+    "draft_judgement": "form_draft_judgement",
+    "claim_chart_summary": "form_draft_summary",
+    "missing_info": "form_missing_info",
+}
+
+
+def apply_prefill_to_session(prefill: dict[str, str]) -> list[str]:
+    """자동 추출값을 기존 위젯 상태에 넣고 비어 있는 필드명을 반환한다."""
+    missing_fields = []
+    for field, session_key in FORM_FIELD_KEYS.items():
+        value = prefill.get(field, "")
+        if field == "draft_judgement" and value not in JUDGEMENTS:
+            value = "검증 제한"
+        st.session_state[session_key] = value
+        if not str(value).strip() and field not in {"claim_chart_summary", "missing_info"}:
+            missing_fields.append(field)
+    return missing_fields
+
+
+def render_extraction_summary(summary: dict[str, Any]) -> None:
+    """자동 추출 범위와 사용자가 확인할 누락 항목을 간단히 표시한다."""
+    st.caption(
+        "자동 추출 결과 · "
+        f"본문 {summary.get('body_paragraph_count', 0)}개 문단 · "
+        f"시각자료 관련 텍스트 {summary.get('visual_text_count', 0)}개 · "
+        f"이미지 후보 {summary.get('image_candidate_count', 0)}개 · "
+        f"출처·단위 후보 {summary.get('source_candidate_count', 0)}개 · "
+        f"본문 추출 신뢰도 {summary.get('extraction_confidence', '낮음')}"
+    )
+    missing = summary.get("missing_fields", [])
+    if missing:
+        st.warning(
+            "자동으로 확인하지 못한 항목: " + ", ".join(str(item) for item in missing)
+            + ". 아래 입력 폼에서 직접 보완해주세요."
+        )
+
+
+def render_ingestion_outcome(outcome: IngestionOutcome) -> None:
+    """자동 입력 상태를 네 가지 사용자 안내 중 하나로 표시한다."""
+    status = outcome["status"]
+    if status == "success":
+        st.success(outcome["message"])
+    elif status == "uncertain":
+        st.warning(outcome["message"])
+    else:
+        # 접근 제한과 기술적 불러오기 실패는 문구로 구분하되 모두 오류로 표시한다.
+        st.error(outcome["message"])
+
+
+def _candidate_widget_key(url: str) -> str:
+    return "article_image_candidate_" + sha256(url.encode("utf-8")).hexdigest()[:16]
+
+
+def clear_article_image_candidate_state(candidates: list[ImageCandidate]) -> None:
+    """새 원문을 불러올 때 이전 이미지 후보 선택 상태를 제거한다."""
+    for candidate in candidates:
+        st.session_state.pop(_candidate_widget_key(candidate["url"]), None)
+
+
+def render_article_image_candidates(candidates: list[ImageCandidate]) -> list[str]:
+    """기사 본문에서 발견한 이미지를 보여주고 사용자가 선택한 URL만 반환한다."""
+    if not candidates:
+        return []
+    st.markdown("#### 기사에서 발견한 이미지 후보")
+    st.info(
+        "아래 이미지는 기사 본문 안에서 발견한 후보입니다. 자동으로 표·차트라고 "
+        "판정하지 않으므로, 실제 검토할 시각자료만 선택하고 수치·축·단위를 직접 보완해주세요."
+    )
+    selected_urls: list[str] = []
+    columns = st.columns(min(3, len(candidates)))
+    for index, candidate in enumerate(candidates):
+        with columns[index % len(columns)]:
+            st.image(
+                candidate["url"],
+                caption=candidate["label"],
+                width="stretch",
+            )
+            if st.checkbox(
+                f"시각자료 후보 {index + 1} 선택",
+                key=_candidate_widget_key(candidate["url"]),
+            ):
+                selected_urls.append(candidate["url"])
+            if candidate["caption"]:
+                st.caption(candidate["caption"])
+    return selected_urls
 
 
 def make_real_llm() -> ChatOpenAI:
@@ -48,6 +167,14 @@ def make_real_llm() -> ChatOpenAI:
     )
 
 
+def run_verdict_critic_graph(llm: Any, state: dict[str, Any]) -> dict[str, Any]:
+    """실제 앱과 테스트가 동일한 LangGraph 실행 경로를 사용하게 한다."""
+    graph = build_verdict_critic_graph(llm)
+    graph_result = graph.invoke(state)
+    # 컴파일된 그래프는 전체 state를 반환하므로 화면과 병합 노드에는 vc_만 전달한다.
+    return pick_vc_only(graph_result)
+
+
 def save_uploaded_chart_images(uploaded_files: list[Any] | None) -> list[str]:
     """업로드 이미지를 충돌하지 않는 이름으로 저장하고 경로 목록을 반환한다.
 
@@ -57,7 +184,7 @@ def save_uploaded_chart_images(uploaded_files: list[Any] | None) -> list[str]:
     if not uploaded_files:
         return []
 
-    # 실행 위치가 달라도 항상 project-root/temp_uploads 아래에 저장한다.
+    # 실행 위치가 달라도 항상 저장소 공용 temp_uploads 아래에 저장한다.
     upload_dir = PROJECT_ROOT / "temp_uploads"
     upload_dir.mkdir(parents=True, exist_ok=True)
     saved_paths: list[str] = []
@@ -73,6 +200,28 @@ def save_uploaded_chart_images(uploaded_files: list[Any] | None) -> list[str]:
         saved_paths.append(str(saved_path))
 
     return saved_paths
+
+
+def save_remote_chart_images(image_urls: list[str]) -> tuple[list[str], list[str]]:
+    """사용자가 선택한 기사 이미지 후보를 안전하게 내려받아 저장한다."""
+    if not image_urls:
+        return [], []
+    upload_dir = PROJECT_ROOT / "temp_uploads"
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    saved_paths: list[str] = []
+    errors: list[str] = []
+    for index, url in enumerate(image_urls, start=1):
+        try:
+            downloaded = download_image_from_url(url)
+            saved_path = upload_dir / (
+                f"article_image_{index}_{uuid4().hex}{downloaded['suffix']}"
+            )
+            saved_path.write_bytes(downloaded["data"])
+            saved_paths.append(str(saved_path))
+        except Exception:
+            LOGGER.warning("선택한 기사 이미지 다운로드 실패", exc_info=True)
+            errors.append(f"시각자료 후보 {index}")
+    return saved_paths, errors
 
 
 def make_input_state(
@@ -193,6 +342,14 @@ def render_sidebar() -> None:
         st.write("3. 축·범례·수치와 관계 요약을 보완하세요.")
         st.markdown("**현재 데모 한계**")
         st.caption("claim_evidence_agent와 info_gap_agent가 없어 ce_/ig_는 사용자 입력 기반 임시 값입니다.")
+        with st.expander("기술 아키텍처"):
+            for architecture in get_technology_architectures():
+                st.markdown(
+                    f"**{architecture['name']} · {architecture['status']}**"
+                )
+                st.caption(architecture["purpose"])
+                st.code(" → ".join(architecture["flow"]), language=None)
+                st.caption("인계: " + architecture["handoff"])
         st.divider()
         st.caption("사용 모델: gpt-5.4-mini")
         st.caption("API 키는 코드가 아닌 .env의 OPENAI_API_KEY에서 읽습니다.")
@@ -433,13 +590,99 @@ def main() -> None:
         "뒷받침하는지 확인합니다."
     )
 
+    st.subheader("0. 뉴스 원문 불러오기")
+    st.caption(
+        "뉴스 기사 URL 또는 스크랩 HTML 파일을 사용할 수 있습니다. 둘 다 입력하면 "
+        "업로드한 HTML 파일을 우선하며, 자동 입력된 내용은 아래에서 직접 수정할 수 있습니다."
+    )
+    article_url = st.text_input(
+        "뉴스 기사 URL",
+        key="article_source_url",
+        placeholder="https://news.example.com/article",
+    )
+    uploaded_html = st.file_uploader(
+        "또는 스크랩 HTML 파일 업로드",
+        type=["html", "htm"],
+        key="article_html_upload",
+    )
+    load_article = st.button("기사 원문 불러오기", use_container_width=True)
+
+    if load_article:
+        # 이전 성공 결과가 새 실패 안내와 함께 남지 않도록 이번 요청 상태를 초기화한다.
+        clear_article_image_candidate_state(
+            st.session_state.get("latest_article_image_candidates", [])
+        )
+        st.session_state.pop("latest_prefill_source", None)
+        st.session_state.pop("latest_extraction_summary", None)
+        st.session_state.pop("latest_article_image_candidates", None)
+        st.session_state.pop("latest_ingestion_outcome", None)
+        if not uploaded_html and not article_url.strip():
+            st.warning("뉴스 기사 URL을 입력하거나 스크랩 HTML 파일을 업로드해주세요.")
+        else:
+            try:
+                with st.spinner("기사 HTML에서 입력 항목을 추출하고 있습니다..."):
+                    # 변경: URL은 분석 텍스트로 사용하지 않는다. 업로드 HTML을 우선하고,
+                    # URL만 있을 때에만 서버에서 HTML을 가져온 뒤 동일 파서에 전달한다.
+                    html = (
+                        read_html_from_upload(uploaded_html)
+                        if uploaded_html
+                        else fetch_html_from_url(article_url)
+                    )
+                    blocks = extract_text_blocks_from_html(
+                        html,
+                        base_url="" if uploaded_html else article_url,
+                    )
+                    prefill = prefill_form_from_text_blocks(blocks)
+                    extraction_summary = summarize_extraction(blocks)
+                    outcome = classify_extraction_outcome(prefill, extraction_summary)
+                    apply_prefill_to_session(prefill)
+                st.session_state["latest_prefill_source"] = (
+                    "업로드한 HTML 파일" if uploaded_html else "뉴스 기사 URL의 HTML"
+                )
+                st.session_state["latest_extraction_summary"] = extraction_summary
+                st.session_state["latest_ingestion_outcome"] = outcome
+                st.session_state["latest_article_image_candidates"] = blocks.get(
+                    "image_candidates", []
+                )
+            except Exception as error:
+                # 현재 한계: 사이트별 차단·로그인·동적 렌더링 실패를 여기서 복구할 수
+                # 없으므로 앱을 중단하지 않고 기존 수동 입력 흐름으로 되돌린다.
+                # 세부 실패 유형과 향후 처리 방향은 docs/frontend_url_html_handoff.md 참조.
+                # 사용자 화면에는 내부 주소나 예외 상세를 노출하지 않되, 운영자가
+                # 실패 유형을 추적할 수 있도록 서버 로그에는 예외 정보를 남긴다.
+                LOGGER.warning("기사 HTML 자동 입력 처리 실패", exc_info=True)
+                message = get_ingestion_error_message(error)
+                status = (
+                    "access_restricted"
+                    if isinstance(error, AccessRestrictedError)
+                    else "fetch_failed"
+                )
+                st.session_state["latest_ingestion_outcome"] = build_failure_outcome(
+                    status, message
+                )
+
+    latest_outcome = st.session_state.get("latest_ingestion_outcome")
+    if latest_outcome:
+        render_ingestion_outcome(latest_outcome)
+
+    if st.session_state.get("latest_prefill_source"):
+        st.info(f"최근 자동 입력 출처: {st.session_state['latest_prefill_source']}")
+        render_extraction_summary(st.session_state.get("latest_extraction_summary", {}))
+
+    selected_article_image_urls = render_article_image_candidates(
+        st.session_state.get("latest_article_image_candidates", [])
+    )
+
     # form 안의 위젯 변경은 분석을 실행하지 않는다. 아래 제출 버튼을 눌렀을 때만
     # submitted=True가 되어 이미지 저장과 LLM 호출 구간으로 진입한다.
     with st.form("verdict_critic_test_form"):
         st.subheader("1. 기사 정보")
-        news_title = st.text_input("기사 제목", help="뉴스 제목을 그대로 입력하세요.")
+        news_title = st.text_input(
+            "기사 제목", key="form_news_title", help="뉴스 제목을 그대로 입력하세요."
+        )
         news_body = st.text_area(
             "기사 본문 주장",
+            key="form_news_body",
             help="기사 본문에서 글로 주장하는 내용을 입력하세요. 본문에 적힌 수치 서술도 포함합니다.",
             height=220,
         )
@@ -467,6 +710,7 @@ def main() -> None:
 
         chart_text = st.text_area(
             "선택 사항: 시각자료에서 읽은 수치/설명",
+            key="form_chart_text",
             help=(
                 "원본 시각자료에서 읽은 수치, 축, 범례, 추세를 입력하세요. "
                 "기사 본문의 수치를 복사하는 칸이 아닙니다."
@@ -479,6 +723,7 @@ def main() -> None:
         )
         source_text = st.text_area(
             "시각자료 출처/주석/단위",
+            key="form_source_text",
             help="차트 하단 출처, 단위, 기간, 축 설명, 범례, 표본 기준 등을 입력하세요.",
             placeholder=(
                 "출처: 통계청 고용동향\n단위: %\n기간: 2022년~2024년\n"
@@ -488,9 +733,12 @@ def main() -> None:
         )
 
         st.subheader("3. 임시 분석 정보")
-        draft_judgement = st.selectbox("임시 초안 판정", JUDGEMENTS)
+        draft_judgement = st.selectbox(
+            "임시 초안 판정", JUDGEMENTS, key="form_draft_judgement"
+        )
         draft_summary = st.text_area(
             "기사 주장과 시각자료의 관계 요약",
+            key="form_draft_summary",
             help="기사 본문 주장이 업로드한 원본 시각자료와 어떻게 맞거나 어긋나는지 입력하세요.",
             placeholder=(
                 "기사 본문은 청년 실업률이 상승했다고 표현하지만, 업로드한 차트는 "
@@ -500,12 +748,15 @@ def main() -> None:
         )
         missing_info_text = st.text_input(
             "시각자료 해석에 부족한 정보",
+            key="form_missing_info",
             help="원본 이미지, 차트 제목, 단위, 기간, 축, 범례, 표본 기준 등을 쉼표로 구분하세요.",
             placeholder="원본 차트 이미지, 차트 기간, 단위, 표본 기준, 축 설명, 범례",
         )
 
         st.subheader("4. 실행")
-        submitted = st.form_submit_button("분석 실행", type="primary", use_container_width=True)
+        submitted = st.form_submit_button(
+            "기사 근거 검증하기", type="primary", use_container_width=True
+        )
 
     # 이 블록 밖에서는 make_real_llm()과 verdict_critic_node()를 호출하지 않는다.
     # 따라서 파일 선택이나 텍스트 입력으로 발생한 일반 rerun은 비용을 발생시키지 않는다.
@@ -517,7 +768,7 @@ def main() -> None:
         if not news_body.strip():
             st.error("기사 본문 주장을 입력해 주세요.")
             st.stop()
-        if not uploaded_files and not chart_text.strip():
+        if not uploaded_files and not selected_article_image_urls and not chart_text.strip():
             st.error("뉴스 내부 시각자료를 업로드하거나 시각자료 보조 설명을 입력해 주세요.")
             st.stop()
 
@@ -526,9 +777,19 @@ def main() -> None:
 
         # 검증을 통과한 뒤에만 업로드 파일을 로컬 임시 폴더에 저장한다.
         chart_image_paths = save_uploaded_chart_images(uploaded_files)
+        remote_image_paths, remote_image_errors = save_remote_chart_images(
+            selected_article_image_urls
+        )
+        chart_image_paths.extend(remote_image_paths)
+        if remote_image_errors:
+            st.warning(
+                ", ".join(remote_image_errors)
+                + " 이미지를 가져오지 못했습니다. 필요한 경우 파일로 직접 업로드해주세요."
+            )
 
-        # 에이전트별 책임을 구분하기 위해 input_, 임시 ce_, 임시 ig_ state를
-        # 각각 만든 다음 하나의 전체 state로 병합한다.
+        # 현재 단일 에이전트 한계: 주장-근거/정보부족 에이전트가 아직 연결되지 않아
+        # 사용자 확인값을 임시 ce_/ig_로 변환한다. 추후 실제 에이전트 결과로 이 두
+        # 생성 함수만 교체하고 vc_ 호출·출력 계약은 유지한다.
         input_state = make_input_state(
             news_title,
             news_body,
@@ -549,9 +810,8 @@ def main() -> None:
 
         # 실제 비용이 발생할 수 있는 LLM 호출은 제출된 이 지점에서 한 번만 수행한다.
         llm = make_real_llm()
-        verdict_critic_node = make_verdict_critic_node(llm)
         with st.spinner("기사 주장과 시각자료의 관계를 검토하고 있습니다..."):
-            vc_result = verdict_critic_node(state)
+            vc_result = run_verdict_critic_graph(llm, state)
 
         # verdict_critic_agent는 vc_ 키만 반환한다. 이를 전체 state에 합친 뒤,
         # deterministic 병합 노드가 사용자용 merge_ 리포트를 생성한다.

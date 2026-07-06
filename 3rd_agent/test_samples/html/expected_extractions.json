@@ -1,0 +1,26 @@
+{
+  "article_with_chart.html": {
+    "title": "청년 고용률 2년 연속 상승",
+    "body_paragraph_count": 2,
+    "visual_contains": "청년 고용률 추이",
+    "source_candidate_count": 1
+  },
+  "generic_paragraph_article.html": {
+    "title": "일반 div 구조의 기사 제목",
+    "body_paragraph_count": 2,
+    "visual_contains": "",
+    "source_candidate_count": 0
+  },
+  "article_with_table.html": {
+    "title": "연도별 지표가 완만하게 증가",
+    "body_paragraph_count": 1,
+    "visual_contains": "70.1",
+    "source_candidate_count": 1
+  },
+  "article_without_metadata.html": {
+    "title": "차트 설명이 없는 기사",
+    "body_paragraph_count": 1,
+    "visual_contains": "",
+    "source_candidate_count": 0
+  }
+}

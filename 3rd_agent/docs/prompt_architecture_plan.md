@@ -186,8 +186,8 @@ ce_ + ig_ + vc_
 
 예정 파일 위치:
 
-- `prompts/claim_evidence_prompt.md`
-- `agents/claim_evidence_agent.py`
+- `third_agent/prompts/claim_evidence_prompt.md`
+- `third_agent/agents/claim_evidence_agent.py`
 
 역할은 뉴스 제목·본문 주장과 시각자료의 수치, 추세, 단위, 변화량을 비교하는 것이다.
 
@@ -222,8 +222,8 @@ ce_ + ig_ + vc_
 
 예정 파일 위치:
 
-- `prompts/info_gap_prompt.md`
-- `agents/info_gap_agent.py`
+- `third_agent/prompts/info_gap_prompt.md`
+- `third_agent/agents/info_gap_agent.py`
 
 역할은 시각자료를 해석하는 데 필요한 검증 정보가 충분한지 확인하는 것이다.
 
@@ -258,8 +258,8 @@ ce_ + ig_ + vc_
 
 파일 위치:
 
-- `prompts/verdict_critic_prompt.md`
-- `agents/verdict_critic_agent.py`
+- `third_agent/prompts/verdict_critic_prompt.md`
+- `third_agent/agents/verdict_critic_agent.py`
 
 역할은 최종 판정이 제공된 근거보다 강하게 단정되지 않았는지 검토하는 것이다.
 
@@ -314,7 +314,7 @@ ce_ + ig_ + vc_
 
 ## 11. report_merge_node 설계
 
-파일 위치: `nodes/report_merge_node.py`
+파일 위치: `third_agent/nodes/report_merge_node.py`
 
 역할은 `ce_`, `ig_`, `vc_` 결과를 사용자용 리포트로 변환하는 것이다. `vc_` 에이전트가 `merge_` 값을 작성해서는 안 되며, 사용자 화면에 보여줄 카드, 요약, 문제 지점, 부족 정보 그룹화는 병합 노드에서 담당한다.
 
@@ -352,7 +352,7 @@ ce_ + ig_ + vc_
 - `verdict_critic_agent.py` 구현
 - `verdict_critic_prompt.md` 작성
 - `news_chart_check_state.py` 작성
-- `frontend/streamlit_app.py` 구현
+- 협업 공용 `frontend/streamlit_app.py` 구현
 - 실제 LLM 모델 `gpt-5.4-mini` 연결
 - `.env` 기반 API 키 관리
 - 뉴스 내부 원본 시각자료 이미지 업로드

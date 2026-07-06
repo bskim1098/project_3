@@ -32,3 +32,8 @@ Thumbs.db
 .ruff_cache/
 .coverage
 htmlcov/
+
+# Python package/build artifacts
+*.egg-info/
+build/
+dist/
