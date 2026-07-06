@@ -11,6 +11,8 @@
 - `input_`, `ce_`, `ig_`, `vc_`, `merge_` prefix 규칙을 정리한다.
 - 최종 판정 기준과 안전 표현 기준을 정의한다.
 - 현재 구현된 `vc_` 최종판정 검토 에이전트와 향후 확장될 전체 구조를 연결한다.
+- 1st_agent 60%, 2nd_agent 20%, 3rd_agent 20%의 책임과 Supervisor 경계를 명확히 한다.
+- 1st_agent에 도입 예정인 GraphRAG의 보조 검색·출처 구분 원칙을 기록한다.
 
 ## 2. 프로젝트 목적
 
@@ -28,14 +30,25 @@
 
 ## 3. 전체 에이전트 구조
 
-최종 기획상 구조는 3개의 에이전트와 1개의 병합 노드로 구성한다.
+최종 기획상 구조는 3개의 에이전트, Supervisor, 병합 단계로 구성한다.
+
+담당 비중과 쓰기 책임은 다음과 같다.
+
+| 작업 공간 | 담당 역할 | 비중 | 쓰기 namespace |
+|---|---|---:|---|
+| `1st_agent` | 주장-근거 검증, GraphRAG 보조 검색 | **60%** | `ce_` |
+| `2nd_agent` | 검증정보·부족 정보 확인 | 20% | `ig_` |
+| `3rd_agent` | 최종판정의 강도와 표현 검토 | 20% | `vc_` |
+| `supervisor` | 실행 순서·실패 분기·state 전달 | 조정 역할 | `runtime_` |
+| 병합 노드 | 사용자용 최종 리포트 생성 | 후처리 | `merge_` |
 
 ```text
 사용자 입력
 → input_ 상태 생성
-→ ce_ 주장-근거 검증 에이전트
-→ ig_ 검증정보 확인 에이전트
-→ vc_ 최종판정 검토 에이전트
+→ Supervisor 입력 계약 검사
+→ ce_ 주장-근거 검증 에이전트(1st_agent, 60%)
+→ ig_ 검증정보 확인 에이전트(2nd_agent, 20%)
+→ vc_ 최종판정 검토 에이전트(3rd_agent, 20%)
 → merge_ 결과 병합 노드
 → 최종 리포트
 ```
@@ -43,22 +56,31 @@
 병렬 구조의 목표는 다음과 같다.
 
 ```text
-input_
-├─ claim_evidence_agent → ce_
-├─ info_gap_agent       → ig_
-└─ verdict_critic_agent → vc_
-
-ce_ + ig_ + vc_
-→ report_merge_node
-→ merge_
+START
+  ↓
+Supervisor 입력 검사
+  ├─ claim_evidence_agent → ce_
+  └─ info_gap_agent       → ig_
+             ↓ 두 결과 수집
+     verdict_critic_agent → vc_
+             ↓
+       report_merge_node  → merge_
+             ↓
+            END
 ```
 
 단, 최종 구조를 실제로 연결할 때는 `verdict_critic_agent`가 `ce_`와 `ig_` 결과를 읽어야 하므로 실행 의존성을 명확히 설계해야 한다. 주장·근거 분석과 검증정보 확인은 병렬화할 수 있지만, 최종판정 검토는 두 결과가 준비된 뒤 실행하는 단계형 병렬 구조가 적절하다.
 
+Supervisor는 개별 에이전트의 판단을 대신하지 않고 실행 순서, 실패 처리, state 전달만 담당한다. 주장·근거 분석과 검증정보 확인은 병렬화할 수 있지만, 최종판정 검토는 두 결과가 준비된 뒤 실행해야 한다.
+
 현재 구현 단계는 다음과 같다.
 
 - `vc_` 최종판정 검토 에이전트가 먼저 구현되었다.
-- `ce_`와 `ig_`는 아직 실제 에이전트가 아니라 임시 입력 기반으로 테스트 중이다.
+- `1st_agent`는 역할별 폴더와 GraphRAG 예정 구조만 준비됐고 실제 `ce_` 로직은 미구현이다.
+- `2nd_agent`는 작업 공간만 있고 실제 `ig_` 에이전트는 미구현이다.
+- `supervisor`는 독립 패키지 구조와 계약 문서만 준비됐고 실제 오케스트레이션은 미구현이다.
+- 공용 프론트엔드는 저장소 최상위 `frontend`에 있다.
+- 현재 프론트는 임시 `ce_`·`ig_` 입력을 만들고 3rd_agent의 컴파일된 단일 LangGraph를 실행한다.
 - 현재 데모는 **vc_ 최종판정 검토 에이전트 + 임시 ce_/ig_ 입력 + Streamlit 서비스형 데모** 단계다.
 
 ## 4. prefix 규칙
@@ -184,10 +206,14 @@ ce_ + ig_ + vc_
 
 ## 8. claim_evidence_agent 프롬프트 구조
 
-예정 파일 위치:
+담당: 준영님, 전체 업무의 **60%**
 
-- `third_agent/prompts/claim_evidence_prompt.md`
-- `third_agent/agents/claim_evidence_agent.py`
+현재 placeholder 파일 위치:
+
+- `1st_agent/first_agent/prompts/claim_evidence_prompt.md`
+- `1st_agent/first_agent/agents/claim_evidence_agent.py`
+- `1st_agent/first_agent/nodes/`
+- `1st_agent/first_agent/graphrag/`
 
 역할은 뉴스 제목·본문 주장과 시각자료의 수치, 추세, 단위, 변화량을 비교하는 것이다.
 
@@ -217,13 +243,17 @@ ce_ + ig_ + vc_
 - 표·차트에서 확인할 수 없는 내용은 만들지 않는다.
 - 기사 주장이 차트 범위를 넘어서는지 확인한다.
 - 최종 단정 대신 1차 판정과 근거를 제공한다.
+- GraphRAG 검색 근거와 기사 내부 시각자료 근거를 명확히 구분한다.
+- 출처나 관련성이 확인되지 않은 GraphRAG 결과를 확정 판정 근거로 사용하지 않는다.
+
+GraphRAG는 기본 ce_ 추출·비교·판정 파이프라인이 안정된 뒤 도입한다. 현재는 `graph_builder.py`, `retriever.py`, `provenance.py`의 위치와 역할만 준비되어 있다.
 
 ## 9. info_gap_agent 프롬프트 구조
 
-예정 파일 위치:
+예정 작업 공간과 파일 위치:
 
-- `third_agent/prompts/info_gap_prompt.md`
-- `third_agent/agents/info_gap_agent.py`
+- `2nd_agent/second_agent/prompts/info_gap_prompt.md`
+- `2nd_agent/second_agent/agents/info_gap_agent.py`
 
 역할은 시각자료를 해석하는 데 필요한 검증 정보가 충분한지 확인하는 것이다.
 
@@ -258,8 +288,8 @@ ce_ + ig_ + vc_
 
 파일 위치:
 
-- `third_agent/prompts/verdict_critic_prompt.md`
-- `third_agent/agents/verdict_critic_agent.py`
+- `3rd_agent/third_agent/prompts/verdict_critic_prompt.md`
+- `3rd_agent/third_agent/agents/verdict_critic_agent.py`
 
 역할은 최종 판정이 제공된 근거보다 강하게 단정되지 않았는지 검토하는 것이다.
 
@@ -312,9 +342,19 @@ ce_ + ig_ + vc_
 
 구조화 출력 이후에도 코드 가드레일을 적용해 허용되지 않은 판정, 위험 표현, 핵심 정보 부족 및 출력 키 범위를 다시 확인한다.
 
-## 11. report_merge_node 설계
+## 11. Supervisor와 report_merge_node 설계
 
-파일 위치: `third_agent/nodes/report_merge_node.py`
+Supervisor 작업 공간:
+
+- `supervisor/multi_agent_supervisor/agents/supervisor_agent.py`
+- `supervisor/multi_agent_supervisor/nodes/`
+- `supervisor/multi_agent_supervisor/state/supervisor_state.py`
+
+Supervisor는 `input_` 계약 검사, 1st·2nd·3rd 에이전트 실행 순서, 실패 분기, state 전달을 담당한다. 에이전트별 판단 결과인 `ce_`, `ig_`, `vc_`를 직접 생성하거나 수정해서는 안 된다.
+
+현재 병합 파일 위치: `3rd_agent/third_agent/nodes/report_merge_node.py`
+
+현재 병합 노드는 동작 중인 서비스 보호를 위해 3rd_agent에 유지한다. 전체 Supervisor 통합 시 `multi_agent_supervisor/nodes/merge_results_node.py` 또는 합의된 공용 계층으로 이관할 대상이다.
 
 역할은 `ce_`, `ig_`, `vc_` 결과를 사용자용 리포트로 변환하는 것이다. `vc_` 에이전트가 `merge_` 값을 작성해서는 안 되며, 사용자 화면에 보여줄 카드, 요약, 문제 지점, 부족 정보 그룹화는 병합 노드에서 담당한다.
 
@@ -349,11 +389,16 @@ ce_ + ig_ + vc_
 
 ### 현재 완료된 것
 
-- `verdict_critic_agent.py` 구현
-- `verdict_critic_prompt.md` 작성
-- `news_chart_check_state.py` 작성
+- `3rd_agent/third_agent/agents/verdict_critic_agent.py` 구현
+- `3rd_agent/third_agent/prompts/verdict_critic_prompt.md` 작성
+- `3rd_agent/third_agent/state/news_chart_check_state.py` 작성
 - 협업 공용 `frontend/streamlit_app.py` 구현
 - 실제 LLM 모델 `gpt-5.4-mini` 연결
+- `START → verdict_critic → END` 단일 LangGraph를 실제 프론트 제출 경로에 연결
+- URL·HTML 자동 입력 결과를 성공·불확실·접근 제한·불러오기 실패로 분류
+- `1st_agent`의 역할별 패키지, 가드레일, 테스트, GraphRAG 예정 구조 준비
+- `supervisor/multi_agent_supervisor`의 독립 패키지와 계약 문서 준비
+- `first_agent`, `frontend`, `multi_agent_supervisor`, `third_agent` 명시적 패키징
 - `.env` 기반 API 키 관리
 - 뉴스 내부 원본 시각자료 이미지 업로드
 - 다중 이미지 업로드
@@ -363,12 +408,17 @@ ce_ + ig_ + vc_
 - 부족 정보 그룹화
 - 핵심 부족 정보와 보조 부족 정보 구분
 - 상세 `vc_` 결과 확인
+- 실제 프론트 LLM 연동 경로 유지
+- 일반 테스트 50개와 vc_ 가드레일 테스트 5개 통과
 
 ### 현재 미완성
 
-- `claim_evidence_agent.py`
-- `info_gap_agent.py`
-- 전체 LangGraph 병렬 실행 구조
+- 1st_agent의 실제 `claim_evidence_agent.py`와 ce_ 노드·스키마·가드레일
+- 1st_agent GraphRAG의 그래프 구축·검색·출처 추적 로직
+- 2nd_agent의 실제 `info_gap_agent.py`
+- Supervisor의 실제 라우팅·실패 분기·state 계약
+- 전체 LangGraph 단계형 병렬 실행 구조
+- 현재 3rd_agent에 있는 전체 state·병합 노드의 Supervisor 또는 공용 계약 계층 이관
 - FastAPI 백엔드
 - DB 저장
 - 이미지 자동 판독 완전 자동화
@@ -414,6 +464,8 @@ ce_ + ig_ + vc_
 ## 15. 향후 확장 계획
 
 1. `claim_evidence_agent.py` 구현
+   - 담당 작업 공간: `1st_agent`
+   - 전체 업무 비중: 60%
    - 기사 주장 추출
    - 시각자료 수치·추세 추출
    - 강한 표현 탐지
@@ -421,33 +473,43 @@ ce_ + ig_ + vc_
    - `ce_` 결과 생성
 
 2. `info_gap_agent.py` 구현
+   - 담당 작업 공간: `2nd_agent`
+   - 전체 업무 비중: 20%
    - 출처, 기간, 단위, 표본 수 확인
    - 핵심·보조 부족 정보 판단
    - 추가 질문 생성
    - `ig_` 결과 생성
 
-3. LangGraph 병렬 구조 연결
+3. Supervisor와 LangGraph 단계형 병렬 구조 연결
+   - 담당 작업 공간: `supervisor`
    - `input_`
    - `ce_`
    - `ig_`
    - `vc_`
    - `merge_`
 
-4. FastAPI 서버화
+4. 1st_agent GraphRAG 구현
+   - 기본 ce_ 파이프라인 안정화 후 진행
+   - 지표·대상·기간·단위·출처 관계 그래프 구축
+   - 관련 문서와 관계 검색
+   - 기사 내부 근거와 외부 검색 근거 출처 구분
+   - 검색 결과는 1차 판정의 보조 근거로 제한
+
+5. FastAPI 서버화
    - 프론트 요청 수신
    - LangGraph 실행
    - 결과 반환
 
-5. DB 저장
+6. DB 저장
    - 요청 정보 저장
    - 에이전트별 결과 저장
    - 최종 리포트 저장
 
-6. RAG 기준 문서 연결
-   - 차트 읽기 기준
-   - 차트 왜곡 패턴
-   - 뉴스 주장 표현 기준
-   - 판정 기준
+7. 운영 기준 문서와 데이터 정책 확정
+   - GraphRAG 허용 출처와 갱신 주기
+   - 차트 읽기·왜곡 패턴 기준
+   - 뉴스 주장 표현·판정 기준
+   - OCR과 이미지 장기 저장 정책
 
 ## 16. 최종 정리
 
@@ -458,5 +520,7 @@ ce_ + ig_ + vc_
 - `ig_`는 검증에 필요한 정보 부족 여부를 확인한다.
 - `vc_`는 최종 판정이 과하게 단정되지 않도록 검토한다.
 - `merge_`는 사용자에게 보여줄 서비스형 리포트를 만든다.
+- Supervisor는 에이전트별 판단을 대신하지 않고 실행 순서와 state 전달을 관리한다.
+- GraphRAG는 1st_agent에 도입하되 기사 내부 근거와 외부 검색 근거를 분리한다.
 
-현재 구현은 전체 서비스 완성본은 아니지만, `vc_` 최종판정 검토 에이전트의 결과 출력 형식은 기획 방향에 맞게 서비스형 데모 수준까지 정리되었다. 이후 확장에서도 각 prefix의 작성 책임, 확인 가능한 근거만 사용하는 원칙, 보수적인 최종 판정 기준을 유지해야 한다.
+현재 구현은 전체 서비스 완성본은 아니지만, `vc_` 최종판정 검토 에이전트와 공용 프론트는 서비스형 데모 수준까지 정리되었다. 1st_agent와 Supervisor는 협업 구조만 준비된 상태이며, 2nd_agent는 구현 전이다. 이후 확장에서도 60·20·20 책임, 각 prefix의 작성 주체, 확인 가능한 근거만 사용하는 원칙, 보수적인 최종 판정 기준을 유지해야 한다.
