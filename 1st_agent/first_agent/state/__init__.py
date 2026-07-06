@@ -1,1 +1,1 @@
-# TODO: 준영님 담당 state 모듈 구현 예정
+"""1st_agent 내부 state와 Supervisor 전달용 ce_ 계약 패키지."""

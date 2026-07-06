@@ -1,1 +1,5 @@
-# TODO: 준영님 담당 chart_extraction_node 테스트 작성 예정
+"""chart_extraction_node의 수치·축·단위·기간 추출을 검증할 테스트 모듈.
+
+향후 정상 차트, 표, 복수 차트, 단위 누락, 판독 불가 fixture를 검증한다.
+현재 상태: TODO - 실제 테스트 미구현.
+"""

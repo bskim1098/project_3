@@ -1,1 +1,5 @@
-# TODO: 준영님 담당 strong_expression_node 테스트 작성 예정
+"""strong_expression_node의 강한 표현 탐지를 검증할 테스트 모듈.
+
+향후 폭증·급락·압도·역대급·원인 표현과 문맥상 오탐 사례를 검증한다.
+현재 상태: TODO - 실제 테스트 미구현.
+"""

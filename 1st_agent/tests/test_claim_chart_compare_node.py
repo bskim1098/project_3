@@ -1,1 +1,5 @@
-# TODO: 준영님 담당 claim_chart_compare_node 테스트 작성 예정
+"""claim_chart_compare_node의 주장-차트 관계 비교를 검증할 테스트 모듈.
+
+향후 일치, 부분 일치, 대상·기간·단위 불일치, 비교 불가 사례를 검증한다.
+현재 상태: TODO - 실제 테스트 미구현.
+"""
