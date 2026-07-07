@@ -108,6 +108,19 @@ class StreamlitUIRegressionTests(unittest.TestCase):
             [widget.label for widget in app.checkbox],
         )
 
+    def test_first_agent_tab_uses_six_user_facing_labels_without_variable_names(self):
+        source = Path("frontend/streamlit_app.py").read_text(encoding="utf-8")
+        for label in (
+            "1. 차트에서 확인한 사실",
+            "2. 기사 제목·본문의 핵심 주장",
+            "3. 강한 표현",
+            "4. 위험 신호",
+            "5. 1차 판정",
+            "6. 1차 판정 이유",
+        ):
+            self.assertIn(f'"{label}"', source)
+        self.assertNotIn("· ce_", source)
+
     def test_ingestion_status_messages_keep_manual_form_available(self):
         cases = (
             ("success", "자동 입력 성공", "success"),

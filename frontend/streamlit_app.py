@@ -565,20 +565,40 @@ def render_service_report(state: dict[str, Any], vc_result: dict[str, Any]) -> N
             st.markdown(state.get("merge_final_report", ""))
 
     with first_analysis_tab:
+        st.caption(
+            "first_agent가 third_agent에 전달한 여섯 개의 ce_ 출력입니다. "
+            "표시 순서는 출력 계약과 같습니다."
+        )
         render_card(
-            "1차 판정",
+            "1. 차트에서 확인한 사실",
+            "\n".join(
+                f"- {item}" for item in state.get("ce_chart_facts", [])
+            ) or "차트에서 확인된 사실이 없습니다.",
+        )
+        render_card(
+            "2. 기사 제목·본문의 핵심 주장",
+            state.get("ce_claim_summary", "기사 핵심 주장을 확인하지 못했습니다."),
+        )
+        render_card(
+            "3. 강한 표현",
+            "\n".join(
+                f"- {item}" for item in state.get("ce_strong_expressions", [])
+            ) or "발견된 강한 표현이 없습니다.",
+        )
+        render_card(
+            "4. 위험 신호",
+            "\n".join(
+                f"- {item}" for item in state.get("ce_risk_flags", [])
+            ) or "표시할 위험 신호가 없습니다.",
+        )
+        render_card(
+            "5. 1차 판정",
             state.get("ce_draft_judgement", "검증 제한"),
-            "first_agent가 기사 주장과 입력된 시각자료 정보를 비교한 결과입니다.",
-        )
-        render_card("1차 판정 이유", state.get("ce_draft_summary", ""))
-        render_card("기사 핵심 주장", state.get("ce_claim_summary", ""))
-        render_card(
-            "차트에서 확인한 사실",
-            "\n".join(str(item) for item in state.get("ce_chart_facts", [])),
+            "기사 주장과 입력된 시각자료를 비교한 first_agent의 보수적인 초안 판정입니다.",
         )
         render_card(
-            "위험 신호",
-            "\n".join(str(item) for item in state.get("ce_risk_flags", [])),
+            "6. 1차 판정 이유",
+            state.get("ce_draft_summary", "판정 이유를 생성하지 못했습니다."),
         )
 
     with issue_tab:

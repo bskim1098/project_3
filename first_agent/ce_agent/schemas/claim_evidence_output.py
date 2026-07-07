@@ -33,6 +33,9 @@ class ClaimEvidenceOutput(BaseModel):
     ce_draft_summary: str = Field(description="1차 판정 이유")
 
 
+CE_OUTPUT_FIELDS: tuple[str, ...] = tuple(ClaimEvidenceOutput.model_fields)
+
+
 class ClaimSummaryOutput(BaseModel):
     """LLM이 기사에서 추출할 수 있는 최소 주장 요약."""
 

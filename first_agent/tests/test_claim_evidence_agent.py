@@ -2,6 +2,7 @@ import unittest
 
 from ce_agent.agents.claim_evidence_agent import (
     ClaimSummaryOutput,
+    CE_OUTPUT_FIELDS,
     build_claim_evidence_graph,
     pick_ce_only,
     run_claim_evidence_agent,
@@ -30,6 +31,21 @@ class ClaimEvidenceAgentTests(unittest.TestCase):
             {"chart_extraction", "claim_extraction", "compare_and_judge", "guardrail"}
             <= nodes
         )
+
+    def test_pick_ce_only_returns_exact_six_field_contract(self):
+        state = {
+            "ce_chart_facts": [],
+            "ce_claim_summary": "주장",
+            "ce_strong_expressions": [],
+            "ce_risk_flags": [],
+            "ce_draft_judgement": "검증 제한",
+            "ce_draft_summary": "이유",
+            "ce_internal_debug": "전달 금지",
+            "vc_revision_needed": False,
+        }
+        output = pick_ce_only(state)
+        self.assertEqual(CE_OUTPUT_FIELDS, tuple(output))
+        self.assertNotIn("ce_internal_debug", output)
 
     def test_llm_structured_summary_is_used_but_rule_judgement_is_preserved(self):
         llm = self.StructuredLLM(

@@ -33,6 +33,7 @@ from ce_agent.nodes.strong_expression_node import (
 )
 from ce_agent.schemas.claim_evidence_output import (
     ALLOWED_CE_JUDGEMENTS,
+    CE_OUTPUT_FIELDS,
     ClaimEvidenceOutput,
     ClaimSummaryOutput,
 )
@@ -150,13 +151,15 @@ def run_claim_evidence_agent(
 
 
 def pick_ce_only(state: Mapping[str, Any]) -> dict[str, Any]:
-    return {key: value for key, value in state.items() if key.startswith("ce_")}
+    """스키마에 선언된 여섯 ce_ 출력만 정해진 순서로 반환한다."""
+    return {key: state[key] for key in CE_OUTPUT_FIELDS if key in state}
 
 
 __all__ = [
     "ALLOWED_CE_JUDGEMENTS",
     "ClaimEvidenceOutput",
     "ClaimSummaryOutput",
+    "CE_OUTPUT_FIELDS",
     "RISK_RULES",
     "STRONG_EXPRESSION_KEYWORDS",
     "build_claim_evidence_graph",

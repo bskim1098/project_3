@@ -12,6 +12,7 @@ from frontend.streamlit_app import (
     run_claim_evidence,
     save_remote_chart_images,
 )
+from vc_agent.agents.verdict_critic_agent import build_verdict_input
 
 
 class FrontendManualInputRegressionTests(unittest.TestCase):
@@ -102,6 +103,14 @@ class FrontendManualInputRegressionTests(unittest.TestCase):
         )
         self.assertIsInstance(ce_state["ce_chart_facts"], list)
         self.assertTrue(all(key.startswith("ce_") for key in ce_state))
+
+        handoff_text = build_verdict_input({**input_state, **ce_state})
+        for value in (
+            ce_state["ce_claim_summary"],
+            ce_state["ce_draft_judgement"],
+            ce_state["ce_draft_summary"],
+        ):
+            self.assertIn(str(value), handoff_text)
 
 
 if __name__ == "__main__":
