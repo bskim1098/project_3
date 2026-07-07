@@ -26,12 +26,12 @@ from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 
 from common.state.news_chart_check_state import NewsChartCheckState
-from first_agent.agents.claim_evidence_agent import (
+from first_agent.ce_agent.agents.claim_evidence_agent import (
     pick_ce_only,
     run_claim_evidence_agent,
 )
-from first_agent.nodes.claim_chart_compare_node import extract_chart_points
-from third_agent.agents.verdict_critic_agent import (
+from first_agent.ce_agent.nodes.claim_chart_compare_node import extract_chart_points
+from third_agent.vc_agent.agents.verdict_critic_agent import (
     build_verdict_critic_graph,
     pick_vc_only,
 )
@@ -54,7 +54,7 @@ from frontend.ingestion_outcome import (
     classify_extraction_outcome,
 )
 from frontend.technology_architecture import get_technology_architectures
-from third_agent.nodes.report_merge_node import build_service_report
+from third_agent.vc_agent.nodes.report_merge_node import build_service_report
 
 
 LOGGER = logging.getLogger(__name__)
@@ -272,13 +272,15 @@ def make_input_state(
     }
 
 
-def run_claim_evidence(state: NewsChartCheckState) -> dict[str, Any]:
-    """1st_agent를 실행하고 다음 단계에 전달할 ce_ 결과만 반환한다."""
-    return pick_ce_only(run_claim_evidence_agent(state))
+def run_claim_evidence(
+    state: NewsChartCheckState, llm: Any | None = None
+) -> dict[str, Any]:
+    """ce_agent LangGraph를 실행하고 다음 단계에 전달할 ce_만 반환한다."""
+    return pick_ce_only(run_claim_evidence_agent(state, llm))
 
 
 def get_chart_input_issues(chart_text: str) -> list[str]:
-    """현재 1st_agent가 비교하기 어려운 차트 입력 조건을 설명한다."""
+    """현재 first_agent가 비교하기 어려운 차트 입력 조건을 설명한다."""
     if not chart_text.strip():
         return [
             "현재는 이미지 OCR을 지원하지 않습니다. 차트에서 직접 읽은 연도·값·단위를 입력해주세요."
@@ -387,7 +389,8 @@ def render_sidebar() -> None:
         st.write("3. 축·범례·수치와 누락 정보를 보완하세요.")
         st.markdown("**현재 데모 한계**")
         st.caption(
-            "claim_evidence_agent는 규칙 기반 1차 분석으로 연결되어 있습니다. "
+            "claim_evidence_agent는 LangGraph와 gpt-5.4-mini structured output을 사용하며, "
+            "수치 비교·판정은 규칙 기반으로 보호됩니다. "
             "info_gap_agent의 ig_만 사용자 입력 기반 임시 값입니다."
         )
         with st.expander("기술 아키텍처"):
@@ -545,7 +548,7 @@ def render_service_report(state: dict[str, Any], vc_result: dict[str, Any]) -> N
 
     # 결과를 목적별로 나눠 긴 보고서를 한 화면에서 훑어보기 쉽게 만든다.
     summary_tab, first_analysis_tab, issue_tab, evidence_tab, detail_tab = st.tabs(
-        ["결과 요약", "1st_agent 분석", "문제 지점", "시각자료 근거", "상세 데이터"]
+        ["결과 요약", "first_agent 분석", "문제 지점", "시각자료 근거", "상세 데이터"]
     )
 
     with summary_tab:
@@ -565,7 +568,7 @@ def render_service_report(state: dict[str, Any], vc_result: dict[str, Any]) -> N
         render_card(
             "1차 판정",
             state.get("ce_draft_judgement", "검증 제한"),
-            "1st_agent가 기사 주장과 입력된 시각자료 정보를 비교한 결과입니다.",
+            "first_agent가 기사 주장과 입력된 시각자료 정보를 비교한 결과입니다.",
         )
         render_card("1차 판정 이유", state.get("ce_draft_summary", ""))
         render_card("기사 핵심 주장", state.get("ce_claim_summary", ""))
@@ -805,7 +808,7 @@ def main() -> None:
         if chart_text.strip() and not chart_input_issues:
             parsed_points = extract_chart_points(chart_text)
             st.success(
-                f"1st_agent 비교 형식 확인 · {len(parsed_points)}개 시점 · "
+                f"first_agent 비교 형식 확인 · {len(parsed_points)}개 시점 · "
                 f"{parsed_points[0].unit} 단위"
             )
         elif chart_text.strip():
@@ -828,7 +831,7 @@ def main() -> None:
 
         st.subheader("3. 분석 보완 정보")
         st.caption(
-            "1차 판정과 관계 요약은 1st_agent가 자동 생성합니다. "
+            "1차 판정과 관계 요약은 first_agent가 자동 생성합니다. "
             "현재 미구현인 정보부족 에이전트를 대신해 누락 정보만 직접 입력합니다."
         )
         missing_info_text = st.text_input(
@@ -855,7 +858,7 @@ def main() -> None:
             st.stop()
         if not chart_text.strip():
             st.error(
-                "현재 1st_agent는 이미지 OCR을 지원하지 않습니다. "
+                "현재 first_agent는 이미지 OCR을 지원하지 않습니다. "
                 "시각자료에서 읽은 연도·값·단위를 직접 입력해 주세요."
             )
             st.stop()
@@ -884,22 +887,31 @@ def main() -> None:
         )
         ig_state = make_temp_ig_state(source_text, chart_image_paths, missing_info)
 
-        # 1st_agent의 ce_ 결과를 만든 뒤 동일 state를 3rd_agent에 전달한다.
+        # ce_agent와 vc_agent는 동일한 gpt-5.4-mini 인스턴스를 순서대로 사용한다.
+        # 모델 초기화가 실패해도 ce_agent는 규칙 기반 fallback으로 실행한다.
+        try:
+            llm = make_real_llm()
+        except Exception:
+            LOGGER.exception("OpenAI 모델 초기화 실패")
+            llm = None
+
+        # first_agent의 ce_ 결과를 만든 뒤 동일 state를 third_agent에 전달한다.
         try:
             with st.spinner("기사 주장과 시각자료의 1차 관계를 분석하고 있습니다..."):
-                ce_state = run_claim_evidence(input_state)
+                ce_state = run_claim_evidence(input_state, llm)
         except Exception:
-            LOGGER.exception("1st_agent 주장-근거 분석 실패")
+            LOGGER.exception("first_agent 주장-근거 분석 실패")
             st.error("1차 주장-근거 분석을 실행하지 못했습니다. 입력 내용을 확인해주세요.")
             st.stop()
 
         state = {**input_state, **ce_state, **ig_state}
 
-        # 실제 비용이 발생할 수 있는 LLM 호출은 3rd_agent 단계에서 한 번만 수행한다.
+        # 실제 비용이 발생할 수 있는 LLM 호출은 third_agent 단계에서 한 번만 수행한다.
         # API 키 누락, 모델 초기화 실패, 일시적인 네트워크 오류가 발생하더라도
         # Streamlit 앱 전체가 traceback과 함께 중단되지 않도록 실행 경계를 둔다.
         try:
-            llm = make_real_llm()
+            if llm is None:
+                raise RuntimeError("OpenAI 모델을 초기화하지 못했습니다.")
             with st.spinner("기사 주장과 시각자료의 관계를 검토하고 있습니다..."):
                 vc_result = run_verdict_critic_graph(llm, state)
         except Exception:

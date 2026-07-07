@@ -2,9 +2,9 @@
 
 ```text
 input_   공용 사용자 입력, 에이전트는 읽기 전용
-ce_      1st_agent 작성
-ig_      2nd_agent 작성
-vc_      3rd_agent 작성
+ce_      first_agent 작성
+ig_      second_agent 작성
+vc_      third_agent 작성
 merge_   병합 노드 작성
 runtime_ Supervisor 실행 상태 전용
 ```

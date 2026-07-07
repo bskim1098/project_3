@@ -3,8 +3,8 @@
 뉴스 내부 표·차트가 기사 주장과 맞는지 검토하는 3차 프로젝트 저장소입니다.
 
 현재 3번 에이전트는 LangChain으로 LLM·structured output을 구성하고, Streamlit의
-실제 검증 실행도 `START → verdict_critic → END` LangGraph를 통과합니다.
-GraphRAG는 전체 업무의 60%를 담당하는 1st_agent에 도입할 예정이며, 현재는 협업 구조만 준비돼 있습니다.
+실제 검증 실행은 `ce_agent`의 단계형 LangGraph를 거쳐 `vc_agent`의 `START → verdict_critic → END` LangGraph로 이어집니다.
+GraphRAG는 전체 업무의 60%를 담당하는 first_agent에 도입할 예정이며, 현재는 협업 구조만 준비돼 있습니다.
 
 기술별 적용 상태와 실행 구조는 다음 명령으로 출력할 수 있습니다.
 
@@ -23,10 +23,10 @@ C:\THIRD_LLM
 ├─ .venv                  # uv 공용 가상환경
 ├─ frontend\              # 팀 협업용 공용 Streamlit·URL/HTML 전처리
 ├─ temp_uploads\          # 프론트에서 선택한 이미지의 공용 임시 저장 위치
-├─ 1st_agent\             # 1번 주장-근거 검증 작업 공간, 전체 역할 60%
-├─ 2nd_agent\             # 2번 에이전트 작업 공간
+├─ first_agent\             # 1번 주장-근거 검증 작업 공간, 전체 역할 60%
+├─ second_agent\             # 2번 에이전트 작업 공간
 ├─ supervisor\            # 멀티에이전트 실행 순서·state 전달 총괄
-└─ 3rd_agent\
+└─ third_agent\
    ├─ third_agent\        # 설치 가능한 Python 패키지
    │  ├─ agents\
    │  ├─ nodes\
@@ -69,7 +69,7 @@ URL/HTML 자동 입력은 뉴스 진위가 아니라 수집 상태를 다음 네
 ## 테스트
 
 ```powershell
-uv run python -m unittest discover -s 3rd_agent/tests -v
-uv run python -m unittest discover -s 3rd_agent/guardrails -v
-uv run python -m compileall frontend 3rd_agent/third_agent 3rd_agent/tests 3rd_agent/guardrails
+uv run python -m unittest discover -s third_agent/tests -v
+uv run python -m unittest discover -s third_agent/guardrails -v
+uv run python -m compileall frontend third_agent/vc_agent third_agent/tests third_agent/guardrails
 ```

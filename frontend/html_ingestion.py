@@ -974,7 +974,8 @@ def _score_chart_image_candidate(
         parent_tokens.append(str(parent.get("id") or ""))
         classes = parent.get("class") or []
         parent_tokens.extend(str(value) for value in classes)
-    text_evidence = " ".join((alt, caption, *parent_tokens)).lower()
+    semantic_text = f"{alt} {caption}".lower()
+    text_evidence = " ".join((semantic_text, *parent_tokens)).lower()
     evidence = f"{text_evidence} {url.lower()}"
     score = 0
     reasons: list[str] = []
@@ -998,9 +999,9 @@ def _score_chart_image_candidate(
         score += 1
         reasons.append("가로형 시각자료 크기입니다.")
 
-    # 많은 언론사가 모든 기사 이미지를 /photo/ 경로에 저장하므로 사진 제외
-    # 표현은 URL이 아니라 캡션·alt·주변 DOM에서만 판정한다.
-    if any(hint in text_evidence for hint in _PHOTO_HINTS):
+    # 많은 언론사가 모든 기사 이미지를 /photo/ 경로나 photo 컨테이너에 넣으므로
+    # 사진 제외 표현은 구조명이 아닌 실제 캡션·alt에 있을 때만 판정한다.
+    if any(hint in semantic_text for hint in _PHOTO_HINTS):
         score -= 5
         exclusions.append("사진·기자·인물 관련 표현이 있습니다.")
     if any(hint in evidence for hint in _PROFILE_HINTS):

@@ -26,16 +26,26 @@ def get_technology_architectures() -> tuple[TechnologyArchitecture, ...]:
         {
             "name": "GraphRAG",
             "status": "도입 예정",
-            "purpose": "전체 업무의 60%를 담당하는 1st_agent의 관계·출처 보조 검색에 적용할 예정입니다.",
+            "purpose": "전체 업무의 60%를 담당하는 first_agent의 관계·출처 보조 검색에 적용할 예정입니다.",
             "flow": ("graph builder", "retriever", "provenance", "ce_ 보조 근거"),
             "handoff": "준영님이 검색 출처와 기사 내부 근거를 구분하는 정책과 함께 구현합니다.",
         },
         {
             "name": "LangGraph",
             "status": "적용됨",
-            "purpose": "최종판정 검토 에이전트의 실행 순서와 state 경계를 관리합니다.",
-            "flow": ("START", "verdict_critic", "END"),
-            "handoff": "팀 전체 그래프에는 make_verdict_critic_node(llm)를 최종 검토 노드로 연결합니다.",
+            "purpose": "ce_agent의 단계별 검증과 vc_agent의 최종 검토 실행 순서를 관리합니다.",
+            "flow": (
+                "ce: START",
+                "chart_extraction",
+                "claim_extraction",
+                "compare_and_judge",
+                "guardrail",
+                "ce: END",
+                "vc: START",
+                "verdict_critic",
+                "vc: END",
+            ),
+            "handoff": "동일 state와 gpt-5.4-mini 인스턴스를 ce_agent에서 vc_agent 순서로 전달합니다.",
         },
         {
             "name": "LangChain",
@@ -45,9 +55,10 @@ def get_technology_architectures() -> tuple[TechnologyArchitecture, ...]:
                 "ChatPromptTemplate",
                 "ChatOpenAI",
                 "structured output",
-                "vc_ guardrails",
+                "ce_ structured summary",
+                "ce_·vc_ guardrails",
             ),
-            "handoff": "모델을 교체해도 vc_ 여섯 필드의 structured output 계약을 유지합니다.",
+            "handoff": "모델을 교체해도 ce_와 vc_의 structured output 계약을 유지합니다.",
         },
     )
 
