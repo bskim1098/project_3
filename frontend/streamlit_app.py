@@ -32,7 +32,9 @@ from first_agent.ce_agent.agents.claim_evidence_agent import (
 )
 from first_agent.ce_agent.nodes.claim_chart_compare_node import extract_chart_points
 from third_agent.vc_agent.agents.verdict_critic_agent import (
+    apply_vc_guardrails,
     build_verdict_critic_graph,
+    make_safe_fallback_output,
     pick_vc_only,
 )
 from frontend.html_ingestion import (
@@ -185,7 +187,9 @@ def make_real_llm() -> ChatOpenAI:
     )
 
 
-def run_verdict_critic_graph(llm: Any, state: dict[str, Any]) -> dict[str, Any]:
+def run_verdict_critic_graph(
+    llm: Any | None, state: dict[str, Any]
+) -> dict[str, Any]:
     """실제 앱과 테스트가 동일한 LangGraph 실행 경로를 사용하게 한다."""
     # 에이전트 빌더는 실행 가능한 LangGraph 객체를 반환하지만 외부 모듈의 반환
     # 타입이 선언되어 있지 않다. 여기서 Any로 경계를 명시해 Pylance가 그래프의
@@ -194,6 +198,20 @@ def run_verdict_critic_graph(llm: Any, state: dict[str, Any]) -> dict[str, Any]:
     graph_result: dict[str, Any] = graph.invoke(state)
     # 컴파일된 그래프는 전체 state를 반환하므로 화면과 병합 노드에는 vc_만 전달한다.
     return pick_vc_only(graph_result)
+
+
+def is_vc_fallback_result(vc_result: Mapping[str, Any]) -> bool:
+    """third_agent가 모델 오류를 안전한 결과로 대체했는지 판별한다.
+
+    ``검증 제한``은 정상 분석에서도 나올 수 있으므로 판정값만으로 fallback을
+    추측하지 않는다. 이 값은 화면 안내에만 쓰고 에이전트 state에는 추가하지 않는다.
+    """
+    revision_reason = str(vc_result.get("vc_revision_reason", ""))
+    return (
+        vc_result.get("vc_recommended_judgement") == "검증 제한"
+        and "오류가 발생해" in revision_reason
+        and "대체" in revision_reason
+    )
 
 
 def save_uploaded_chart_images(uploaded_files: list[Any] | None) -> list[str]:
@@ -926,21 +944,25 @@ def main() -> None:
 
         state = {**input_state, **ce_state, **ig_state}
 
-        # 실제 비용이 발생할 수 있는 LLM 호출은 third_agent 단계에서 한 번만 수행한다.
-        # API 키 누락, 모델 초기화 실패, 일시적인 네트워크 오류가 발생하더라도
-        # Streamlit 앱 전체가 traceback과 함께 중단되지 않도록 실행 경계를 둔다.
+        # llm이 None이어도 third_agent에 전달한다. 에이전트 내부에서 모델 초기화·호출
+        # 실패를 보수적인 '검증 제한' 결과로 바꾸므로 frontend가 먼저 중단하지 않는다.
+        frontend_fallback_used = False
         try:
-            if llm is None:
-                raise RuntimeError("OpenAI 모델을 초기화하지 못했습니다.")
             with st.spinner("기사 주장과 시각자료의 관계를 검토하고 있습니다..."):
                 vc_result = run_verdict_critic_graph(llm, state)
         except Exception:
-            LOGGER.exception("최종판정 검토 모델 실행 실패")
-            st.error(
-                "검토 모델을 실행하지 못했습니다. .env의 OPENAI_API_KEY와 "
-                "네트워크 연결을 확인한 뒤 다시 시도해주세요."
+            # 그래프 구성·실행 자체가 실패한 경우에도 결과 계약을 유지해
+            # merge와 화면 렌더링을 계속하는 frontend 최후 방어선이다.
+            LOGGER.exception("최종판정 검토 그래프 실행 실패")
+            vc_result = apply_vc_guardrails(
+                make_safe_fallback_output(
+                    "분석 처리 중 오류가 발생해 '검증 제한'으로 대체했습니다."
+                ),
+                state,
             )
-            st.stop()
+            frontend_fallback_used = True
+
+        fallback_used = frontend_fallback_used or is_vc_fallback_result(vc_result)
 
         # verdict_critic_agent는 vc_ 키만 반환한다. 이를 전체 state에 합친 뒤,
         # deterministic 병합 노드가 사용자용 merge_ 리포트를 생성한다.
@@ -952,11 +974,18 @@ def main() -> None:
         st.session_state["latest_analysis"] = {
             "state": state,
             "vc_result": vc_result,
+            # UI 메타데이터는 input_/ce_/ig_/vc_ state 계약과 분리해 보관한다.
+            "fallback_used": fallback_used,
         }
 
     # 이번 실행에서 새 분석이 없더라도 이전에 성공한 최신 리포트를 다시 그린다.
     latest_analysis = st.session_state.get("latest_analysis")
     if latest_analysis:
+        if latest_analysis.get("fallback_used"):
+            st.warning(
+                "모델 응답을 사용할 수 없어 보수적인 fallback 결과를 표시합니다. "
+                "현재 결과는 검증 제한 상태입니다."
+            )
         render_service_report(
             latest_analysis["state"],
             latest_analysis["vc_result"],
