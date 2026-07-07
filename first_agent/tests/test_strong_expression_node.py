@@ -1,6 +1,6 @@
 import unittest
 
-from ce_agent.nodes.strong_expression_node import (
+from first_agent.ce_agent.nodes.strong_expression_node import (
     detect_risk_flags,
     extract_strong_expressions,
 )

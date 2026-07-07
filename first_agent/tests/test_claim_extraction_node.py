@@ -1,6 +1,6 @@
 import unittest
 
-from ce_agent.nodes.claim_extraction_node import summarize_claim
+from first_agent.ce_agent.nodes.claim_extraction_node import summarize_claim
 
 
 class ClaimExtractionNodeTests(unittest.TestCase):

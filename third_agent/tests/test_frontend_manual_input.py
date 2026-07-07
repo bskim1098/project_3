@@ -12,7 +12,7 @@ from frontend.streamlit_app import (
     run_claim_evidence,
     save_remote_chart_images,
 )
-from vc_agent.agents.verdict_critic_agent import build_verdict_input
+from third_agent.vc_agent.agents.verdict_critic_agent import build_verdict_input
 
 
 class FrontendManualInputRegressionTests(unittest.TestCase):

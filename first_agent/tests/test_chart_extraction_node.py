@@ -1,6 +1,6 @@
 import unittest
 
-from ce_agent.nodes.chart_extraction_node import extract_chart_facts
+from first_agent.ce_agent.nodes.chart_extraction_node import extract_chart_facts
 
 
 class ChartExtractionNodeTests(unittest.TestCase):

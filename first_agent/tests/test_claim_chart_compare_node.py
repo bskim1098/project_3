@@ -1,6 +1,6 @@
 import unittest
 
-from ce_agent.nodes.claim_chart_compare_node import compare_claim_to_chart
+from first_agent.ce_agent.nodes.claim_chart_compare_node import compare_claim_to_chart
 
 
 class ClaimChartCompareNodeTests(unittest.TestCase):

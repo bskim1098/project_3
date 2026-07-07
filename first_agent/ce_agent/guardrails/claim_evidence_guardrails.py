@@ -3,7 +3,7 @@
 from collections.abc import Mapping
 from typing import Any
 
-from ce_agent.schemas.claim_evidence_output import ClaimEvidenceOutput
+from first_agent.ce_agent.schemas.claim_evidence_output import ClaimEvidenceOutput
 
 
 UNSAFE_ASSERTIONS = (

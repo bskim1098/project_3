@@ -1,6 +1,9 @@
 import unittest
 
-from vc_agent.agents.verdict_critic_agent import apply_vc_guardrails
+from third_agent.vc_agent.agents.verdict_critic_agent import (
+    apply_vc_guardrails,
+    determine_recommended_judgement,
+)
 
 
 class VerdictCriticGuardrailTests(unittest.TestCase):
@@ -47,14 +50,42 @@ class VerdictCriticGuardrailTests(unittest.TestCase):
 
     def test_unknown_judgement_falls_back(self):
         result = apply_vc_guardrails(
-            self.make_output(vc_recommended_judgement="판단 불가"), {}
+            self.make_output(vc_recommended_judgement="판단 불가"),
+            {"ce_draft_judgement": "주의 필요", "ce_chart_facts": ["확인된 수치"]},
         )
-        self.assertEqual("검증 제한", result["vc_recommended_judgement"])
+        self.assertEqual("주의 필요", result["vc_recommended_judgement"])
         self.assertTrue(result["vc_revision_needed"])
 
     def test_normal_output_is_unchanged(self):
         output = self.make_output()
-        self.assertEqual(output, apply_vc_guardrails(output, {}))
+        state = {"ce_draft_judgement": "주의 필요", "ce_chart_facts": ["확인된 수치"]}
+        self.assertEqual(output, apply_vc_guardrails(output, state))
+
+    def test_same_state_has_same_judgement_despite_different_llm_answers(self):
+        state = {"ce_draft_judgement": "주의 필요", "ce_chart_facts": ["확인된 수치"]}
+        first = apply_vc_guardrails(
+            self.make_output(vc_recommended_judgement="대체로 뒷받침됨"), state
+        )
+        second = apply_vc_guardrails(
+            self.make_output(vc_recommended_judgement="검증 제한"), state
+        )
+        self.assertEqual("주의 필요", first["vc_recommended_judgement"])
+        self.assertEqual(first["vc_recommended_judgement"], second["vc_recommended_judgement"])
+
+    def test_critical_gap_overrides_clear_distortion_draft(self):
+        state = {
+            "ce_draft_judgement": "왜곡 가능성 높음",
+            "ce_chart_facts": [],
+            "ig_missing_info": ["출처", "기간"],
+        }
+        self.assertEqual("검증 제한", determine_recommended_judgement(state))
+
+    def test_supported_draft_maps_to_user_facing_supported_judgement(self):
+        state = {
+            "ce_draft_judgement": "믿어도 됨",
+            "ce_chart_facts": ["2024년 100", "2025년 110"],
+        }
+        self.assertEqual("대체로 뒷받침됨", determine_recommended_judgement(state))
 
 
 if __name__ == "__main__":

@@ -2,7 +2,7 @@ import unittest
 
 from pydantic import ValidationError
 
-from ce_agent.guardrails.claim_evidence_guardrails import (
+from first_agent.ce_agent.guardrails.claim_evidence_guardrails import (
     validate_ce_output,
     validate_state_update,
 )

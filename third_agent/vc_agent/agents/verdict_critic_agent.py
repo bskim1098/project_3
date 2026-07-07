@@ -690,6 +690,26 @@ def has_info_gap(state: dict[str, Any]) -> bool:
     """핵심 판단을 제한할 정도의 정보 부족이 있는지 반환한다."""
     return bool(get_critical_info_gap_reasons(state))
 
+
+CE_TO_VC_JUDGEMENT = {
+    "믿어도 됨": "대체로 뒷받침됨",
+    "주의 필요": "주의 필요",
+    "검증 제한": "검증 제한",
+    "왜곡 가능성 높음": "왜곡 가능성 높음",
+}
+
+
+def determine_recommended_judgement(state: dict[str, Any]) -> str:
+    """동일한 ce_·ig_ 입력에 항상 같은 최종 추천 판정을 반환한다.
+
+    핵심 정보가 부족하면 ce_ 초안보다 우선해 검증 제한을 사용한다. 그 외에는
+    first_agent의 규칙 기반 1차 판정을 최종 사용자용 명칭으로 변환한다.
+    """
+    if get_critical_info_gap_reasons(state):
+        return "검증 제한"
+    draft = str(state.get("ce_draft_judgement") or "").strip()
+    return CE_TO_VC_JUDGEMENT.get(draft, "검증 제한")
+
 # ============================================================
 # 7. LLM 결과 후처리
 # ============================================================
@@ -748,20 +768,26 @@ def apply_vc_guardrails(
     output.setdefault("vc_critic_notes", "")
 
     # ------------------------------------------------------------
-    # 2. 판정값 검사
+    # 2. 판정값 결정
     # ------------------------------------------------------------
-    # 판정은 반드시 4개 중 하나여야 한다.
+    # LLM 판정은 참고하지 않고 ce_ 초안과 핵심 정보 부족 여부로 고정한다.
+    # 따라서 같은 state는 실행할 때마다 같은 추천 최종 판정을 만든다.
+    llm_judgement = output.get("vc_recommended_judgement")
+    deterministic_judgement = determine_recommended_judgement(state)
+    output["vc_recommended_judgement"] = deterministic_judgement
 
-    judgement = output.get("vc_recommended_judgement")
-
-    if judgement not in ALLOWED_JUDGEMENTS:
-        output["vc_recommended_judgement"] = "검증 제한"
+    if llm_judgement not in ALLOWED_JUDGEMENTS:
         output["vc_revision_needed"] = True
         output["vc_revision_reason"] = (
-            "허용되지 않은 판정값이 생성되어 '검증 제한'으로 보정했습니다."
+            "허용되지 않은 판정값이 생성되어 규칙 기반 최종 판정으로 보정했습니다."
         )
         output["vc_safe_expression"] = (
             "현재 제공된 근거만으로는 명확한 최종 판정을 내리기 어렵습니다."
+        )
+    elif llm_judgement != deterministic_judgement:
+        output["vc_revision_needed"] = True
+        output["vc_revision_reason"] = (
+            "LLM 판정과 규칙 기반 판정이 달라 동일 입력에 적용되는 고정 판정으로 보정했습니다."
         )
 
     # ------------------------------------------------------------

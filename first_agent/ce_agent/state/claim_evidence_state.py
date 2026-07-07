@@ -2,7 +2,7 @@
 
 from typing import NotRequired, TypedDict
 
-from ce_agent.schemas.claim_evidence_output import CeJudgement
+from first_agent.ce_agent.schemas.claim_evidence_output import CeJudgement
 
 
 class ClaimEvidenceState(TypedDict):

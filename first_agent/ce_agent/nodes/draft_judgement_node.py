@@ -1,7 +1,7 @@
 """비교 결과로 보수적인 1차 판정과 이유를 생성한다."""
 
-from ce_agent.nodes.claim_chart_compare_node import ComparisonStatus
-from ce_agent.schemas.claim_evidence_output import CeJudgement
+from first_agent.ce_agent.nodes.claim_chart_compare_node import ComparisonStatus
+from first_agent.ce_agent.schemas.claim_evidence_output import CeJudgement
 
 
 def decide_draft_judgement(

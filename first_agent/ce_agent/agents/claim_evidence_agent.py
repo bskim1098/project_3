@@ -14,24 +14,24 @@ from langchain_core.prompts import ChatPromptTemplate
 from langgraph.graph import END, START, StateGraph
 
 from common.state.news_chart_check_state import NewsChartCheckState
-from ce_agent.guardrails.claim_evidence_guardrails import (
+from first_agent.ce_agent.guardrails.claim_evidence_guardrails import (
     validate_ce_output,
     validate_state_update,
 )
-from ce_agent.nodes.chart_extraction_node import extract_chart_facts
-from ce_agent.nodes.claim_chart_compare_node import compare_claim_to_chart
-from ce_agent.nodes.claim_extraction_node import summarize_claim
-from ce_agent.nodes.draft_judgement_node import (
+from first_agent.ce_agent.nodes.chart_extraction_node import extract_chart_facts
+from first_agent.ce_agent.nodes.claim_chart_compare_node import compare_claim_to_chart
+from first_agent.ce_agent.nodes.claim_extraction_node import summarize_claim
+from first_agent.ce_agent.nodes.draft_judgement_node import (
     build_draft_summary,
     decide_draft_judgement,
 )
-from ce_agent.nodes.strong_expression_node import (
+from first_agent.ce_agent.nodes.strong_expression_node import (
     RISK_RULES,
     STRONG_EXPRESSION_KEYWORDS,
     detect_risk_flags,
     extract_strong_expressions,
 )
-from ce_agent.schemas.claim_evidence_output import (
+from first_agent.ce_agent.schemas.claim_evidence_output import (
     ALLOWED_CE_JUDGEMENTS,
     CE_OUTPUT_FIELDS,
     ClaimEvidenceOutput,

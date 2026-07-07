@@ -1,6 +1,6 @@
 import unittest
 
-from ce_agent.agents.claim_evidence_agent import (
+from first_agent.ce_agent.agents.claim_evidence_agent import (
     ClaimSummaryOutput,
     CE_OUTPUT_FIELDS,
     build_claim_evidence_graph,

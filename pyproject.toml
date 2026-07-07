@@ -17,19 +17,26 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools]
 packages = [
     "frontend",
-    "ce_agent",
-    "ce_agent.agents",
-    "ce_agent.graphrag",
-    "ce_agent.guardrails",
-    "ce_agent.nodes",
-    "ce_agent.parsers",
-    "ce_agent.schemas",
-    "ce_agent.state",
-    "vc_agent",
-    "vc_agent.agents",
-    "vc_agent.nodes",
-    "vc_agent.parsers",
-    "ig_agent",
+    "common",
+    "common.state",
+    "first_agent",
+    "first_agent.ce_agent",
+    "first_agent.ce_agent.agents",
+    "first_agent.ce_agent.graphrag",
+    "first_agent.ce_agent.guardrails",
+    "first_agent.ce_agent.nodes",
+    "first_agent.ce_agent.parsers",
+    "first_agent.ce_agent.prompts",
+    "first_agent.ce_agent.schemas",
+    "first_agent.ce_agent.state",
+    "second_agent",
+    "second_agent.ig_agent",
+    "third_agent",
+    "third_agent.vc_agent",
+    "third_agent.vc_agent.agents",
+    "third_agent.vc_agent.nodes",
+    "third_agent.vc_agent.parsers",
+    "third_agent.vc_agent.prompts",
     "multi_agent_supervisor",
     "multi_agent_supervisor.agents",
     "multi_agent_supervisor.guardrails",
@@ -40,12 +47,13 @@ packages = [
 
 [tool.setuptools.package-dir]
 frontend = "frontend"
-ce_agent = "first_agent/ce_agent"
-vc_agent = "third_agent/vc_agent"
-ig_agent = "second_agent/ig_agent"
+common = "common"
+first_agent = "first_agent"
+second_agent = "second_agent"
+third_agent = "third_agent"
 multi_agent_supervisor = "supervisor/multi_agent_supervisor"
 
 [tool.setuptools.package-data]
-ce_agent = ["prompts/*.md"]
-vc_agent = ["prompts/*.md"]
+"first_agent.ce_agent" = ["prompts/*.md"]
+"third_agent.vc_agent" = ["prompts/*.md"]
 multi_agent_supervisor = ["prompts/*.md"]

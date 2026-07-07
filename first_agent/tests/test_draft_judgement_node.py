@@ -1,6 +1,6 @@
 import unittest
 
-from ce_agent.nodes.draft_judgement_node import decide_draft_judgement
+from first_agent.ce_agent.nodes.draft_judgement_node import decide_draft_judgement
 
 
 class DraftJudgementNodeTests(unittest.TestCase):
