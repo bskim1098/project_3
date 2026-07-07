@@ -103,7 +103,7 @@ def _image_paths(state: dict[str, Any]) -> list[str]:
 
 def _redact_image_paths(value: Any, state: dict[str, Any]) -> str:
     """일반 사용자용 문구에서 업로드 이미지의 로컬 경로를 제거한다."""
-    text = _as_text(value)
+    text = "\n".join(_as_string_list(value))
     for path in _image_paths(state):
         text = text.replace(path, "")
 

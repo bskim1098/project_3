@@ -2,7 +2,7 @@
 # C:\THIRD_LLM에서 실행:
 # uv run streamlit run frontend/streamlit_app.py
 
-"""verdict_critic_agent 기반 데이터 체커 서비스형 데모."""
+"""claim_evidence_agent와 verdict_critic_agent를 연결한 데이터 체커 데모."""
 
 import logging
 import sys
@@ -11,7 +11,7 @@ from html import escape
 from pathlib import Path
 from pprint import pformat
 from textwrap import dedent
-from typing import Any
+from typing import Any, Mapping
 from uuid import uuid4
 
 
@@ -25,14 +25,22 @@ import streamlit as st
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 
+from common.state.news_chart_check_state import NewsChartCheckState
+from first_agent.agents.claim_evidence_agent import (
+    pick_ce_only,
+    run_claim_evidence_agent,
+)
+from first_agent.nodes.claim_chart_compare_node import extract_chart_points
 from third_agent.agents.verdict_critic_agent import (
     build_verdict_critic_graph,
     pick_vc_only,
 )
 from frontend.html_ingestion import (
     AccessRestrictedError,
+    FormPrefill,
     ImageCandidate,
     download_image_from_url,
+    select_chart_image_candidates,
     extract_text_blocks_from_html,
     fetch_html_from_url,
     get_ingestion_error_message,
@@ -72,7 +80,9 @@ FORM_FIELD_KEYS = {
 }
 
 
-def apply_prefill_to_session(prefill: dict[str, str]) -> list[str]:
+def apply_prefill_to_session(
+    prefill: FormPrefill | Mapping[str, str],
+) -> list[str]:
     """자동 추출값을 기존 위젯 상태에 넣고 비어 있는 필드명을 반환한다."""
     missing_fields = []
     for field, session_key in FORM_FIELD_KEYS.items():
@@ -91,7 +101,8 @@ def render_extraction_summary(summary: dict[str, Any]) -> None:
         "자동 추출 결과 · "
         f"본문 {summary.get('body_paragraph_count', 0)}개 문단 · "
         f"시각자료 관련 텍스트 {summary.get('visual_text_count', 0)}개 · "
-        f"이미지 후보 {summary.get('image_candidate_count', 0)}개 · "
+        f"표·차트 후보 {summary.get('chart_candidate_count', summary.get('image_candidate_count', 0))}개 "
+        f"(전체 이미지 {summary.get('image_candidate_count', 0)}개) · "
         f"출처·단위 후보 {summary.get('source_candidate_count', 0)}개 · "
         f"본문 추출 신뢰도 {summary.get('extraction_confidence', '낮음')}"
     )
@@ -126,17 +137,21 @@ def clear_article_image_candidate_state(candidates: list[ImageCandidate]) -> Non
 
 
 def render_article_image_candidates(candidates: list[ImageCandidate]) -> list[str]:
-    """기사 본문에서 발견한 이미지를 보여주고 사용자가 선택한 URL만 반환한다."""
+    """규칙 기반으로 선별한 표·차트 후보와 선택 근거를 보여준다."""
+    chart_candidates = select_chart_image_candidates(candidates)
     if not candidates:
         return []
-    st.markdown("#### 기사에서 발견한 이미지 후보")
+    st.markdown("#### 기사에서 선별한 표·차트 후보")
+    if not chart_candidates:
+        st.info("기사 이미지에서 표·차트 후보를 찾지 못했습니다. 필요한 이미지는 직접 업로드해주세요.")
+        return []
     st.info(
-        "아래 이미지는 기사 본문 안에서 발견한 후보입니다. 자동으로 표·차트라고 "
-        "판정하지 않으므로, 실제 검토할 시각자료만 선택하고 수치·축·단위를 직접 보완해주세요."
+        "HTML의 캡션·대체텍스트·위치 정보를 이용해 사진·프로필·광고를 제외한 후보입니다. "
+        "최종 검토할 시각자료를 선택해주세요."
     )
     selected_urls: list[str] = []
-    columns = st.columns(min(3, len(candidates)))
-    for index, candidate in enumerate(candidates):
+    columns = st.columns(min(3, len(chart_candidates)))
+    for index, candidate in enumerate(chart_candidates):
         with columns[index % len(columns)]:
             st.image(
                 candidate["url"],
@@ -150,6 +165,9 @@ def render_article_image_candidates(candidates: list[ImageCandidate]) -> list[st
                 selected_urls.append(candidate["url"])
             if candidate["caption"]:
                 st.caption(candidate["caption"])
+            reasons = candidate.get("selection_reasons", [])
+            if reasons:
+                st.caption("선별 이유: " + " ".join(reasons))
     return selected_urls
 
 
@@ -158,7 +176,7 @@ def make_real_llm() -> ChatOpenAI:
 
     API 키를 인자로 직접 받지 않는 이유는 main()에서 load_dotenv()를 먼저
     호출한 뒤, ChatOpenAI가 환경 변수 OPENAI_API_KEY를 읽도록 하기 위해서다.
-    temperature=0은 같은 입력에서 판정 문구가 불필요하게 흔들리는 것을 줄인다.
+    GPT-5 계열 모델에서는 temperature=0이 지원되지 않아 값을 별도로 지정하지 않는다.
     """
     return ChatOpenAI(
         model="gpt-5.4-mini",
@@ -169,8 +187,11 @@ def make_real_llm() -> ChatOpenAI:
 
 def run_verdict_critic_graph(llm: Any, state: dict[str, Any]) -> dict[str, Any]:
     """실제 앱과 테스트가 동일한 LangGraph 실행 경로를 사용하게 한다."""
-    graph = build_verdict_critic_graph(llm)
-    graph_result = graph.invoke(state)
+    # 에이전트 빌더는 실행 가능한 LangGraph 객체를 반환하지만 외부 모듈의 반환
+    # 타입이 선언되어 있지 않다. 여기서 Any로 경계를 명시해 Pylance가 그래프의
+    # invoke 메서드를 Unknown으로 전파하지 않게 한다.
+    graph: Any = build_verdict_critic_graph(llm)
+    graph_result: dict[str, Any] = graph.invoke(state)
     # 컴파일된 그래프는 전체 state를 반환하므로 화면과 병합 노드에는 vc_만 전달한다.
     return pick_vc_only(graph_result)
 
@@ -230,7 +251,7 @@ def make_input_state(
     chart_text: str = "",
     source_text: str = "",
     chart_image_paths: list[str] | None = None,
-) -> dict[str, object]:
+) -> NewsChartCheckState:
     """사용자 입력을 에이전트가 읽는 input_ state로 변환한다.
 
     기존 단일 이미지용 input_chart_image_path를 없애지 않고 유지하면서,
@@ -249,6 +270,30 @@ def make_input_state(
         "input_chart_image_path": "\n".join(paths),
         "input_chart_image_paths": paths,
     }
+
+
+def run_claim_evidence(state: NewsChartCheckState) -> dict[str, Any]:
+    """1st_agent를 실행하고 다음 단계에 전달할 ce_ 결과만 반환한다."""
+    return pick_ce_only(run_claim_evidence_agent(state))
+
+
+def get_chart_input_issues(chart_text: str) -> list[str]:
+    """현재 1st_agent가 비교하기 어려운 차트 입력 조건을 설명한다."""
+    if not chart_text.strip():
+        return [
+            "현재는 이미지 OCR을 지원하지 않습니다. 차트에서 직접 읽은 연도·값·단위를 입력해주세요."
+        ]
+
+    points = extract_chart_points(chart_text)
+    issues: list[str] = []
+    if len(points) < 2:
+        issues.append("비교하려면 연도와 값이 포함된 시점을 최소 2개 입력해야 합니다.")
+    if points and any(not point.unit for point in points):
+        issues.append("일부 수치의 단위가 없습니다. 각 값 뒤에 동일한 단위를 입력해주세요.")
+    units = {point.unit for point in points if point.unit}
+    if len(units) > 1:
+        issues.append("시점별 단위가 서로 다릅니다. 같은 단위로 맞춰주세요.")
+    return issues
 
 
 def make_temp_ce_state(
@@ -339,9 +384,12 @@ def render_sidebar() -> None:
         st.markdown("**입력 가이드**")
         st.write("1. 기사 제목과 본문 주장을 입력하세요.")
         st.write("2. 뉴스 내부 원본 시각자료를 업로드하세요.")
-        st.write("3. 축·범례·수치와 관계 요약을 보완하세요.")
+        st.write("3. 축·범례·수치와 누락 정보를 보완하세요.")
         st.markdown("**현재 데모 한계**")
-        st.caption("claim_evidence_agent와 info_gap_agent가 없어 ce_/ig_는 사용자 입력 기반 임시 값입니다.")
+        st.caption(
+            "claim_evidence_agent는 규칙 기반 1차 분석으로 연결되어 있습니다. "
+            "info_gap_agent의 ig_만 사용자 입력 기반 임시 값입니다."
+        )
         with st.expander("기술 아키텍처"):
             for architecture in get_technology_architectures():
                 st.markdown(
@@ -496,8 +544,8 @@ def render_service_report(state: dict[str, Any], vc_result: dict[str, Any]) -> N
     render_top_summary_cards(state.get("merge_top_summary_cards", {}))
 
     # 결과를 목적별로 나눠 긴 보고서를 한 화면에서 훑어보기 쉽게 만든다.
-    summary_tab, issue_tab, evidence_tab, detail_tab = st.tabs(
-        ["결과 요약", "문제 지점", "시각자료 근거", "상세 데이터"]
+    summary_tab, first_analysis_tab, issue_tab, evidence_tab, detail_tab = st.tabs(
+        ["결과 요약", "1st_agent 분석", "문제 지점", "시각자료 근거", "상세 데이터"]
     )
 
     with summary_tab:
@@ -512,6 +560,23 @@ def render_service_report(state: dict[str, Any], vc_result: dict[str, Any]) -> N
             st.markdown(f"- {recommendation}")
         with st.expander("완성된 Markdown 리포트 보기"):
             st.markdown(state.get("merge_final_report", ""))
+
+    with first_analysis_tab:
+        render_card(
+            "1차 판정",
+            state.get("ce_draft_judgement", "검증 제한"),
+            "1st_agent가 기사 주장과 입력된 시각자료 정보를 비교한 결과입니다.",
+        )
+        render_card("1차 판정 이유", state.get("ce_draft_summary", ""))
+        render_card("기사 핵심 주장", state.get("ce_claim_summary", ""))
+        render_card(
+            "차트에서 확인한 사실",
+            "\n".join(str(item) for item in state.get("ce_chart_facts", [])),
+        )
+        render_card(
+            "위험 신호",
+            "\n".join(str(item) for item in state.get("ce_risk_flags", [])),
+        )
 
     with issue_tab:
         issue_cards = state.get("merge_issue_cards", [])
@@ -583,7 +648,7 @@ def main() -> None:
 
     st.title("📊 데이터 체커")
     st.markdown("### 기사 주장과 뉴스 내부 원본 시각자료의 관계를 확인합니다")
-    st.caption("현재 단계: verdict_critic_agent 기반 서비스형 데모")
+    st.caption("현재 단계: claim_evidence_agent → verdict_critic_agent 연결 데모")
     st.info(
         "이 서비스는 기사 본문 수치를 외부 자료와 대조하는 팩트체크가 아닙니다. "
         "같은 뉴스 안에 삽입된 원본 표·차트·그래프·도표가 기사 주장을 "
@@ -632,10 +697,15 @@ def main() -> None:
                         html,
                         base_url="" if uploaded_html else article_url,
                     )
-                    prefill = prefill_form_from_text_blocks(blocks)
+                    prefill: FormPrefill = prefill_form_from_text_blocks(blocks)
                     extraction_summary = summarize_extraction(blocks)
-                    outcome = classify_extraction_outcome(prefill, extraction_summary)
-                    apply_prefill_to_session(prefill)
+                    outcome: IngestionOutcome = classify_extraction_outcome(
+                        prefill,
+                        extraction_summary,
+                    )
+                    # 분류 단계에서 문자열로 정규화된 값을 세션에도 동일하게 적용한다.
+                    # 반환되는 누락 필드 목록은 outcome.summary가 사용자에게 안내한다.
+                    _missing_form_fields = apply_prefill_to_session(outcome["prefill"])
                 st.session_state["latest_prefill_source"] = (
                     "업로드한 HTML 파일" if uploaded_html else "뉴스 기사 URL의 HTML"
                 )
@@ -692,6 +762,15 @@ def main() -> None:
             "외부 사이트에서 따로 찾은 자료가 아니라, 해당 뉴스에 실제 삽입된 원본 "
             "시각자료를 우선 업로드하세요. 보조 설명만으로도 테스트 실행은 가능합니다."
         )
+        if selected_article_image_urls:
+            st.markdown("**기사에서 선택한 원본 시각자료**")
+            selected_columns = st.columns(min(3, len(selected_article_image_urls)))
+            for index, image_url in enumerate(selected_article_image_urls):
+                with selected_columns[index % len(selected_columns)]:
+                    st.image(image_url, caption=f"기사에서 자동 입력된 시각자료 {index + 1}")
+            st.caption(
+                f"선택한 {len(selected_article_image_urls)}개 이미지는 분석 시 직접 업로드 파일과 함께 처리됩니다."
+            )
         uploaded_files = st.file_uploader(
             "뉴스 내부 시각자료 원본 업로드",
             type=["png", "jpg", "jpeg", "webp"],
@@ -709,18 +788,33 @@ def main() -> None:
                     )
 
         chart_text = st.text_area(
-            "선택 사항: 시각자료에서 읽은 수치/설명",
+            "시각자료에서 읽은 수치/설명",
             key="form_chart_text",
             help=(
-                "원본 시각자료에서 읽은 수치, 축, 범례, 추세를 입력하세요. "
-                "기사 본문의 수치를 복사하는 칸이 아닙니다."
+                "원본 시각자료에서 읽은 값을 '연도 + 항목 + 값 + 단위' 형식으로 "
+                "최소 두 시점 입력하세요. 현재 이미지 OCR은 지원하지 않습니다."
             ),
             placeholder=(
-                "차트 제목: 연도별 청년 실업률\n단위: %\n2022년 6.4\n"
-                "2023년 6.1\n2024년 5.9\n그래프는 2022년부터 2024년까지 하락 흐름을 보임"
+                "차트 제목: 연도별 수출액\n"
+                "2024년 수출 100억달러\n"
+                "2025년 수출 92억달러"
             ),
             height=150,
         )
+        chart_input_issues = get_chart_input_issues(chart_text)
+        if chart_text.strip() and not chart_input_issues:
+            parsed_points = extract_chart_points(chart_text)
+            st.success(
+                f"1st_agent 비교 형식 확인 · {len(parsed_points)}개 시점 · "
+                f"{parsed_points[0].unit} 단위"
+            )
+        elif chart_text.strip():
+            for issue in chart_input_issues:
+                st.warning(issue)
+        else:
+            st.caption(
+                "입력 예: 2024년 수출 100억달러 / 2025년 수출 92억달러"
+            )
         source_text = st.text_area(
             "시각자료 출처/주석/단위",
             key="form_source_text",
@@ -732,19 +826,10 @@ def main() -> None:
             height=120,
         )
 
-        st.subheader("3. 임시 분석 정보")
-        draft_judgement = st.selectbox(
-            "임시 초안 판정", JUDGEMENTS, key="form_draft_judgement"
-        )
-        draft_summary = st.text_area(
-            "기사 주장과 시각자료의 관계 요약",
-            key="form_draft_summary",
-            help="기사 본문 주장이 업로드한 원본 시각자료와 어떻게 맞거나 어긋나는지 입력하세요.",
-            placeholder=(
-                "기사 본문은 청년 실업률이 상승했다고 표현하지만, 업로드한 차트는 "
-                "2022년 6.4%, 2023년 6.1%, 2024년 5.9%로 하락 흐름을 보여줍니다."
-            ),
-            height=120,
+        st.subheader("3. 분석 보완 정보")
+        st.caption(
+            "1차 판정과 관계 요약은 1st_agent가 자동 생성합니다. "
+            "현재 미구현인 정보부족 에이전트를 대신해 누락 정보만 직접 입력합니다."
         )
         missing_info_text = st.text_input(
             "시각자료 해석에 부족한 정보",
@@ -768,8 +853,11 @@ def main() -> None:
         if not news_body.strip():
             st.error("기사 본문 주장을 입력해 주세요.")
             st.stop()
-        if not uploaded_files and not selected_article_image_urls and not chart_text.strip():
-            st.error("뉴스 내부 시각자료를 업로드하거나 시각자료 보조 설명을 입력해 주세요.")
+        if not chart_text.strip():
+            st.error(
+                "현재 1st_agent는 이미지 OCR을 지원하지 않습니다. "
+                "시각자료에서 읽은 연도·값·단위를 직접 입력해 주세요."
+            )
             st.stop()
 
         # 쉼표 입력을 ig_missing_info가 사용하는 문자열 목록으로 정규화한다.
@@ -787,9 +875,6 @@ def main() -> None:
                 + " 이미지를 가져오지 못했습니다. 필요한 경우 파일로 직접 업로드해주세요."
             )
 
-        # 현재 단일 에이전트 한계: 주장-근거/정보부족 에이전트가 아직 연결되지 않아
-        # 사용자 확인값을 임시 ce_/ig_로 변환한다. 추후 실제 에이전트 결과로 이 두
-        # 생성 함수만 교체하고 vc_ 호출·출력 계약은 유지한다.
         input_state = make_input_state(
             news_title,
             news_body,
@@ -797,21 +882,33 @@ def main() -> None:
             source_text,
             chart_image_paths,
         )
-        ce_state = make_temp_ce_state(
-            news_title,
-            news_body,
-            chart_text,
-            chart_image_paths,
-            draft_judgement,
-            draft_summary,
-        )
         ig_state = make_temp_ig_state(source_text, chart_image_paths, missing_info)
+
+        # 1st_agent의 ce_ 결과를 만든 뒤 동일 state를 3rd_agent에 전달한다.
+        try:
+            with st.spinner("기사 주장과 시각자료의 1차 관계를 분석하고 있습니다..."):
+                ce_state = run_claim_evidence(input_state)
+        except Exception:
+            LOGGER.exception("1st_agent 주장-근거 분석 실패")
+            st.error("1차 주장-근거 분석을 실행하지 못했습니다. 입력 내용을 확인해주세요.")
+            st.stop()
+
         state = {**input_state, **ce_state, **ig_state}
 
-        # 실제 비용이 발생할 수 있는 LLM 호출은 제출된 이 지점에서 한 번만 수행한다.
-        llm = make_real_llm()
-        with st.spinner("기사 주장과 시각자료의 관계를 검토하고 있습니다..."):
-            vc_result = run_verdict_critic_graph(llm, state)
+        # 실제 비용이 발생할 수 있는 LLM 호출은 3rd_agent 단계에서 한 번만 수행한다.
+        # API 키 누락, 모델 초기화 실패, 일시적인 네트워크 오류가 발생하더라도
+        # Streamlit 앱 전체가 traceback과 함께 중단되지 않도록 실행 경계를 둔다.
+        try:
+            llm = make_real_llm()
+            with st.spinner("기사 주장과 시각자료의 관계를 검토하고 있습니다..."):
+                vc_result = run_verdict_critic_graph(llm, state)
+        except Exception:
+            LOGGER.exception("최종판정 검토 모델 실행 실패")
+            st.error(
+                "검토 모델을 실행하지 못했습니다. .env의 OPENAI_API_KEY와 "
+                "네트워크 연결을 확인한 뒤 다시 시도해주세요."
+            )
+            st.stop()
 
         # verdict_critic_agent는 vc_ 키만 반환한다. 이를 전체 state에 합친 뒤,
         # deterministic 병합 노드가 사용자용 merge_ 리포트를 생성한다.

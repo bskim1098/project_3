@@ -1,5 +1,17 @@
-"""claim_extraction_node의 기사 핵심 주장 추출을 검증할 테스트 모듈.
+import unittest
 
-향후 제목·본문 주장, 대상·기간·방향, 인과 주장, 복수 주장 분리를 검증한다.
-현재 상태: TODO - 실제 테스트 미구현.
-"""
+from first_agent.nodes.claim_extraction_node import summarize_claim
+
+
+class ClaimExtractionNodeTests(unittest.TestCase):
+    def test_title_is_preserved_without_inventing_claims(self):
+        result = summarize_claim("고용 3% 증가", "조사 결과 고용이 늘었다.")
+        self.assertIn("고용 3% 증가", result)
+        self.assertIn("조사 결과 고용이 늘었다", result)
+
+    def test_empty_article_reports_limitation(self):
+        self.assertIn("부족", summarize_claim("", ""))
+
+
+if __name__ == "__main__":
+    unittest.main()

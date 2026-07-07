@@ -4,14 +4,34 @@ from pathlib import Path
 from unittest.mock import patch
 
 from frontend.streamlit_app import (
+    get_chart_input_issues,
     make_input_state,
     make_temp_ce_state,
     make_temp_ig_state,
+    run_claim_evidence,
     save_remote_chart_images,
 )
 
 
 class FrontendManualInputRegressionTests(unittest.TestCase):
+    def test_chart_input_guidance_accepts_two_comparable_points(self):
+        issues = get_chart_input_issues(
+            "2024년 수출 100억달러\n2025년 수출 92억달러"
+        )
+
+        self.assertEqual([], issues)
+
+    def test_chart_input_guidance_reports_missing_point_and_unit(self):
+        issues = get_chart_input_issues("2025년 수출 92")
+
+        self.assertTrue(any("최소 2개" in issue for issue in issues))
+        self.assertTrue(any("단위" in issue for issue in issues))
+
+    def test_chart_input_guidance_explains_current_ocr_limit(self):
+        issues = get_chart_input_issues("")
+
+        self.assertTrue(any("OCR" in issue for issue in issues))
+
     @patch("frontend.streamlit_app.download_image_from_url")
     def test_selected_remote_image_is_saved_to_existing_image_path_flow(self, mocked_download):
         mocked_download.return_value = {
@@ -37,7 +57,7 @@ class FrontendManualInputRegressionTests(unittest.TestCase):
             chart_image_paths=["chart.png"],
         )
         self.assertEqual("기사 제목", input_state["input_news_title"])
-        self.assertEqual(["chart.png"], input_state["input_chart_image_paths"])
+        self.assertEqual(["chart.png"], input_state.get("input_chart_image_paths"))
         self.assertTrue(all(key.startswith("input_") for key in input_state))
 
     def test_temporary_agent_states_preserve_existing_keys(self):
@@ -49,6 +69,30 @@ class FrontendManualInputRegressionTests(unittest.TestCase):
         self.assertEqual(["기간"], ig_state["ig_missing_info"])
         self.assertTrue(all(key.startswith("ce_") for key in ce_state))
         self.assertTrue(all(key.startswith("ig_") for key in ig_state))
+
+    def test_first_agent_result_is_ready_for_verdict_critic_handoff(self):
+        input_state = make_input_state(
+            news_title="수출이 크게 감소했다",
+            news_body="올해 수출은 지난해보다 감소할 전망이다.",
+            chart_text="2024년 100, 2025년 92, 단위: 억달러",
+            source_text="출처: 산업연구원, 기간: 2024~2025년",
+        )
+
+        ce_state = run_claim_evidence(input_state)
+
+        self.assertEqual(
+            {
+                "ce_chart_facts",
+                "ce_claim_summary",
+                "ce_strong_expressions",
+                "ce_risk_flags",
+                "ce_draft_judgement",
+                "ce_draft_summary",
+            },
+            set(ce_state),
+        )
+        self.assertIsInstance(ce_state["ce_chart_facts"], list)
+        self.assertTrue(all(key.startswith("ce_") for key in ce_state))
 
 
 if __name__ == "__main__":

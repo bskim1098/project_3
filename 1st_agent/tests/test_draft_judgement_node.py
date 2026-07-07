@@ -1,5 +1,27 @@
-"""draft_judgement_node의 보수적인 1차 판정을 검증할 테스트 모듈.
+import unittest
 
-향후 허용 판정 네 종류, 정보 부족 시 검증 제한, 과도한 왜곡 판정 방지를 검증한다.
-현재 상태: TODO - 실제 테스트 미구현.
-"""
+from first_agent.nodes.draft_judgement_node import decide_draft_judgement
+
+
+class DraftJudgementNodeTests(unittest.TestCase):
+    def test_information_gap_overrides_contradiction(self):
+        result = decide_draft_judgement(
+            ["수치"], [], ["출처가 부족합니다."], "contradicted"
+        )
+        self.assertEqual("검증 제한", result)
+
+    def test_clear_direction_conflict_allows_high_distortion_risk(self):
+        self.assertEqual(
+            "왜곡 가능성 높음",
+            decide_draft_judgement(["수치"], [], [], "contradicted"),
+        )
+
+    def test_supported_but_strong_word_needs_caution(self):
+        self.assertEqual(
+            "주의 필요",
+            decide_draft_judgement(["수치"], ["폭증"], [], "supported"),
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()

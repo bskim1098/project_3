@@ -50,7 +50,7 @@ class NewsChartCheckState(TypedDict):
     # 2. ce_ : claim_evidence_agent 결과
     # ============================================================
 
-    ce_chart_facts: NotRequired[str]
+    ce_chart_facts: NotRequired[list[str]]
     ce_claim_summary: NotRequired[str]
     ce_strong_expressions: NotRequired[list[str]]
     ce_risk_flags: NotRequired[list[str]]

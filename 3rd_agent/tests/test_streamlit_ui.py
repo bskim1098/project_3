@@ -27,6 +27,13 @@ class StreamlitUIRegressionTests(unittest.TestCase):
         self.assertIn("GraphRAG · 도입 예정", architecture_text)
         self.assertIn("LangGraph · 적용됨", architecture_text)
         self.assertIn("LangChain · 적용됨", architecture_text)
+        self.assertTrue(
+            any(
+                "claim_evidence_agent → verdict_critic_agent 연결 데모" in element.value
+                for element in app.caption
+            )
+        )
+        self.assertNotIn("임시 초안 판정", [widget.label for widget in app.selectbox])
 
     def test_empty_source_request_keeps_manual_form_available(self):
         app = self.make_app()
@@ -70,10 +77,33 @@ class StreamlitUIRegressionTests(unittest.TestCase):
                 "caption": "",
                 "label": "고용률 추이 그래프",
                 "likely_chart": True,
+                "chart_score": 8,
+                "selection_reasons": ["그래프 표현을 확인했습니다."],
+                "exclusion_reasons": [],
             }
         ]
         app.run()
         self.assertIn(
+            "시각자료 후보 1 선택",
+            [widget.label for widget in app.checkbox],
+        )
+
+    def test_non_chart_article_image_is_not_offered_for_selection(self):
+        app = self.make_app()
+        app.session_state["latest_article_image_candidates"] = [
+            {
+                "url": "https://images.example.com/reporter.jpg",
+                "alt": "김기자 프로필",
+                "caption": "",
+                "label": "김기자 프로필",
+                "likely_chart": False,
+                "chart_score": -7,
+                "selection_reasons": [],
+                "exclusion_reasons": ["프로필 영역"],
+            }
+        ]
+        app.run()
+        self.assertNotIn(
             "시각자료 후보 1 선택",
             [widget.label for widget in app.checkbox],
         )

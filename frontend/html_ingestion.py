@@ -146,6 +146,9 @@ class ImageCandidate(TypedDict):
     caption: str
     label: str
     likely_chart: bool
+    chart_score: NotRequired[int]
+    selection_reasons: NotRequired[list[str]]
+    exclusion_reasons: NotRequired[list[str]]
 
 
 class DownloadedImage(TypedDict):
@@ -273,7 +276,8 @@ def _validate_public_http_url(url: str) -> str:
             raise ArticleFetchError("기사 URL의 주소를 확인하지 못했습니다.")
         for entry in resolved:
             # IPv6 link-local 주소에 붙을 수 있는 scope id(%eth0)는 IP 판정에서 제외한다.
-            resolved_address = ipaddress.ip_address(entry[4][0].split("%", 1)[0])
+            resolved_host = str(entry[4][0]).split("%", 1)[0]
+            resolved_address = ipaddress.ip_address(resolved_host)
             if not resolved_address.is_global:
                 raise InvalidArticleURLError(
                     "사설 또는 로컬 네트워크로 연결되는 URL은 사용할 수 없습니다."
@@ -430,6 +434,16 @@ def _ordered_unique(values: list[str]) -> list[str]:
 
 def _clean_text(value: Any) -> str:
     return " ".join(str(value or "").split())
+
+
+def _class_names(element: Tag) -> list[str]:
+    """BeautifulSoup의 class 속성을 항상 문자열 목록으로 정규화한다."""
+    raw_classes = element.get("class")
+    if raw_classes is None:
+        return []
+    if isinstance(raw_classes, list):
+        return [str(item) for item in raw_classes]
+    return str(raw_classes).split()
 
 
 def _document_url(soup: BeautifulSoup, base_url: str) -> str:
@@ -591,7 +605,7 @@ def _container_score(element: Tag) -> int:
 
     normalized_itemprop = str(element.get("itemprop") or "").lower()
     identifier = " ".join(
-        [str(element.get("id") or ""), *[str(item) for item in element.get("class", [])]]
+        [str(element.get("id") or ""), *_class_names(element)]
     ).lower()
     semantic_bonus = 0
     if "articlebody" in normalized_itemprop:
@@ -696,7 +710,7 @@ def _candidate_label(element: Tag) -> str:
     identifier = str(element.get("id") or "").strip()
     if identifier:
         return f"adaptive:#{identifier}"
-    classes = [str(item).strip() for item in element.get("class", []) if str(item).strip()]
+    classes = [item.strip() for item in _class_names(element) if item.strip()]
     if classes:
         return "adaptive:." + ".".join(classes[:3])
     return f"adaptive:{element.name}"
@@ -933,6 +947,86 @@ def _numeric_dimension(image: Tag, name: str) -> int | None:
     return int(match.group()) if match else None
 
 
+_CHART_STRONG_HINTS = ("차트", "그래프", "도표", "인포그래픽", "chart", "graph")
+_CHART_CONTEXT_HINTS = (
+    "전망", "증감률", "추이", "비중", "현황", "통계", "분포", "지표", "단위", "출처",
+)
+_PHOTO_HINTS = (
+    "자료사진", "현장사진", "기념촬영", "포토", "기자", "프로필", "인물", "photo",
+)
+_PROFILE_HINTS = ("reporter", "author", "profile", "avatar", "byline")
+_AD_HINTS = ("advert", "banner", "promotion", "광고", "배너")
+
+
+def _score_chart_image_candidate(
+    image: Tag,
+    url: str,
+    alt: str,
+    caption: str,
+    width: int | None,
+    height: int | None,
+) -> tuple[int, list[str], list[str]]:
+    """HTML 메타정보만으로 표·차트 후보 점수와 설명을 만든다."""
+    parent_tokens: list[str] = []
+    for parent in list(image.parents)[:4]:
+        if not isinstance(parent, Tag):
+            continue
+        parent_tokens.append(str(parent.get("id") or ""))
+        classes = parent.get("class") or []
+        parent_tokens.extend(str(value) for value in classes)
+    text_evidence = " ".join((alt, caption, *parent_tokens)).lower()
+    evidence = f"{text_evidence} {url.lower()}"
+    score = 0
+    reasons: list[str] = []
+    exclusions: list[str] = []
+
+    if any(hint in evidence for hint in _CHART_STRONG_HINTS) or bool(
+        re.search(r"(?:^|[\s(\[])표(?:$|[\s=:\])])", f"{alt} {caption}")
+    ):
+        score += 5
+        reasons.append("캡션·대체텍스트에서 표·차트 표현을 확인했습니다.")
+    if any(hint in evidence for hint in _CHART_CONTEXT_HINTS):
+        score += 3
+        reasons.append("전망·증감률·통계 등 시각자료 문맥을 확인했습니다.")
+    if re.search(r"(?:19|20)\d{2}|\d+(?:\.\d+)?\s*(?:%|명|건|원|달러|배)", f"{alt} {caption}"):
+        score += 2
+        reasons.append("연도·수치·단위 표현을 확인했습니다.")
+    if image.find_parent(("figure", "table")) is not None:
+        score += 1
+        reasons.append("기사의 figure/table 영역에 있습니다.")
+    if width and height and width >= 500 and width / max(height, 1) >= 1.2:
+        score += 1
+        reasons.append("가로형 시각자료 크기입니다.")
+
+    # 많은 언론사가 모든 기사 이미지를 /photo/ 경로에 저장하므로 사진 제외
+    # 표현은 URL이 아니라 캡션·alt·주변 DOM에서만 판정한다.
+    if any(hint in text_evidence for hint in _PHOTO_HINTS):
+        score -= 5
+        exclusions.append("사진·기자·인물 관련 표현이 있습니다.")
+    if any(hint in evidence for hint in _PROFILE_HINTS):
+        score -= 7
+        exclusions.append("작성자 또는 프로필 영역에 있습니다.")
+    if any(hint in evidence for hint in _AD_HINTS):
+        score -= 10
+        exclusions.append("광고·배너 관련 표현이 있습니다.")
+    if width and height and width <= 180 and height <= 180 and abs(width - height) <= 40:
+        score -= 4
+        exclusions.append("작은 정사각형 프로필 이미지 형태입니다.")
+    return score, reasons, exclusions
+
+
+def select_chart_image_candidates(
+    candidates: list[ImageCandidate], minimum_score: int = 4
+) -> list[ImageCandidate]:
+    """표·차트 근거가 충분하고 명확한 제외 사유가 없는 후보만 반환한다."""
+    return [
+        candidate
+        for candidate in candidates
+        if candidate.get("chart_score", 0) >= minimum_score
+        and not candidate.get("exclusion_reasons")
+    ]
+
+
 def _extract_image_candidates(
     container: Tag | BeautifulSoup | None,
     document_url: str,
@@ -971,14 +1065,19 @@ def _extract_image_candidates(
         figure = image.find_parent("figure")
         caption_element = figure.find("figcaption") if figure else None
         caption = _clean_text(caption_element.get_text(" ", strip=True)) if caption_element else ""
-        evidence_text = f"{alt} {caption}"
+        chart_score, reasons, exclusions = _score_chart_image_candidate(
+            image, normalized_url, alt, caption, width, height
+        )
         candidates.append(
             {
                 "url": normalized_url,
                 "alt": alt,
                 "caption": caption,
                 "label": alt or caption or f"기사 이미지 후보 {len(candidates) + 1}",
-                "likely_chart": _has_visual_hint(evidence_text),
+                "likely_chart": chart_score >= 4 and not exclusions,
+                "chart_score": chart_score,
+                "selection_reasons": reasons,
+                "exclusion_reasons": exclusions,
             }
         )
         seen.add(normalized_url)
@@ -1005,19 +1104,52 @@ def _extract_visual_texts(container: Tag | None, images: list[ImageCandidate]) -
     return _ordered_unique(values)
 
 
-def _extract_title(soup: BeautifulSoup) -> str:
+def _strip_site_name(title: str, soup: BeautifulSoup) -> str:
+    """메타 제목 끝에 반복된 사이트 이름만 제거한다."""
+    normalized = _clean_text(title)
+    site_meta = soup.select_one("meta[property='og:site_name']")
+    site_name = _clean_text(site_meta.get("content")) if site_meta else ""
+    if not normalized or not site_name:
+        return normalized
+    for separator in (" - ", " | ", " · ", " : "):
+        suffix = separator + site_name
+        if normalized.casefold().endswith(suffix.casefold()):
+            return normalized[: -len(suffix)].strip()
+    return normalized
+
+
+def _extract_title(soup: BeautifulSoup, container: Tag | None = None) -> str:
+    """사이트 로고용 h1보다 기사 구조화 메타데이터를 우선해 제목을 찾는다."""
+    json_ld = _json_ld_news_article(soup)
+    if json_ld.get("headline"):
+        return _strip_site_name(_clean_text(json_ld["headline"]), soup)
+
+    for selector in (
+        "meta[property='og:title']",
+        "meta[name='twitter:title']",
+        "meta[property='twitter:title']",
+    ):
+        title_meta = soup.select_one(selector)
+        if title_meta and title_meta.get("content"):
+            return _strip_site_name(_clean_text(title_meta.get("content")), soup)
+
+    # 구조화 메타데이터가 없는 단순 HTML에서는 선택된 기사 컨테이너와 가까운
+    # 제목을 먼저 보고, 마지막 수단으로 문서의 첫 h1을 사용한다.
+    if container is not None:
+        local_h1 = container.find("h1")
+        if local_h1:
+            title = _clean_text(local_h1.get_text(" ", strip=True))
+            if title:
+                return title
     h1 = soup.find("h1")
     if h1:
         title = _clean_text(h1.get_text(" ", strip=True))
         if title:
             return title
-    og_title = soup.select_one("meta[property='og:title']")
-    if og_title and og_title.get("content"):
-        return _clean_text(og_title.get("content"))
-    json_ld = _json_ld_news_article(soup)
-    if json_ld.get("headline"):
-        return _clean_text(json_ld["headline"])
-    return _clean_text(soup.title.get_text(" ", strip=True)) if soup.title else ""
+    return _strip_site_name(
+        _clean_text(soup.title.get_text(" ", strip=True)) if soup.title else "",
+        soup,
+    )
 
 
 def extract_text_blocks_from_html(html: str, base_url: str = "") -> HTMLTextBlocks:
@@ -1043,7 +1175,7 @@ def extract_text_blocks_from_html(html: str, base_url: str = "") -> HTMLTextBloc
     images = _extract_image_candidates(image_root, document_url)
     visual_parts = _extract_visual_texts(container, images)
     return {
-        "title": _extract_title(soup),
+        "title": _extract_title(soup, container),
         "body_paragraphs": paragraphs,
         "visual_texts": visual_parts,
         "source_candidates": [
@@ -1067,11 +1199,13 @@ def summarize_extraction(blocks: HTMLTextBlocks) -> dict[str, Any]:
         missing.append("시각자료 관련 텍스트")
     if not blocks["source_candidates"]:
         missing.append("출처·단위 후보")
+    image_candidates = blocks.get("image_candidates", [])
     return {
         "body_paragraph_count": len(blocks["body_paragraphs"]),
         "visual_text_count": len(blocks["visual_texts"]),
         "source_candidate_count": len(blocks["source_candidates"]),
-        "image_candidate_count": len(blocks.get("image_candidates", [])),
+        "image_candidate_count": len(image_candidates),
+        "chart_candidate_count": len(select_chart_image_candidates(image_candidates)),
         "body_selector": blocks.get("body_selector", "확인되지 않음"),
         "extraction_confidence": blocks.get("extraction_confidence", "낮음"),
         "missing_fields": missing,

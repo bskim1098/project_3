@@ -25,7 +25,7 @@ class IngestionOutcome(TypedDict):
 
 
 def classify_extraction_outcome(
-    prefill: Mapping[str, str],
+    prefill: Mapping[str, object],
     summary: Mapping[str, Any],
 ) -> IngestionOutcome:
     """확보한 HTML의 추출 품질을 성공 또는 불확실로 분류한다."""

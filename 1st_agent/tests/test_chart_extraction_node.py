@@ -1,5 +1,19 @@
-"""chart_extraction_node의 수치·축·단위·기간 추출을 검증할 테스트 모듈.
+import unittest
 
-향후 정상 차트, 표, 복수 차트, 단위 누락, 판독 불가 fixture를 검증한다.
-현재 상태: TODO - 실제 테스트 미구현.
-"""
+from first_agent.nodes.chart_extraction_node import extract_chart_facts
+
+
+class ChartExtractionNodeTests(unittest.TestCase):
+    def test_extracts_only_values_present_in_chart_text(self):
+        facts = extract_chart_facts("2024년 10%\n2025년 12%")
+        joined = " ".join(facts)
+        self.assertIn("2024년", joined)
+        self.assertIn("12%", joined)
+        self.assertNotIn("증가", joined)
+
+    def test_empty_chart_has_no_facts(self):
+        self.assertEqual([], extract_chart_facts(""))
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -1,7 +1,13 @@
-"""기사 제목과 본문에서 검증 대상 주장을 추출할 노드.
+"""기사에 실제로 적힌 핵심 주장을 보수적으로 축약한다."""
 
-입력: input_news_title, input_news_body.
-출력: 대상·지표·기간·방향·인과 표현을 정리한 ce_claim_summary 후보.
-제약: 기사에 없는 주장을 새로 만들지 않는다.
-구현 상태: TODO - 준영님 담당 구현 예정.
-"""
+
+def summarize_claim(title: str, body: str) -> str:
+    title = title.strip()
+    body = " ".join(body.split())
+    if title and body:
+        return f"제목은 '{title}'이며, 본문은 '{body[:120]}' 내용을 중심으로 주장합니다."
+    if title:
+        return f"제목은 '{title}'입니다."
+    if body:
+        return f"본문은 '{body[:150]}' 내용을 중심으로 주장합니다."
+    return "기사 제목과 본문 내용이 부족해 핵심 주장을 요약하기 어렵습니다."

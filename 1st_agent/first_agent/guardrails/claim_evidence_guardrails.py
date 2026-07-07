@@ -1,7 +1,35 @@
-"""1st_agent 결과를 Supervisor와 3rd_agent에 전달하기 전에 검사할 가드레일.
+"""1st_agent 출력의 namespace, 스키마, 표현 안전성을 검증한다."""
 
-검사 대상: ce_ 전용 출력, 허용 판정, 근거 없는 수치, 과한 판정, 필수 근거 누락.
-GraphRAG 규칙: 검색 근거와 기사 내부 근거를 구분하고 출처 없는 검색 결과를 확정 근거로 사용하지 않는다.
-출력: 안전하게 보정된 ce_ 결과 또는 검증 제한 fallback.
-구현 상태: TODO - 현재는 실제 가드레일 로직을 포함하지 않음.
-"""
+from collections.abc import Mapping
+from typing import Any
+
+from first_agent.schemas.claim_evidence_output import ClaimEvidenceOutput
+
+
+UNSAFE_ASSERTIONS = (
+    "가짜 뉴스", "조작", "사기", "완전히 틀림", "명백한 허위", "절대 믿으면 안 됨",
+)
+
+
+def validate_ce_output(output: Mapping[str, Any]) -> ClaimEvidenceOutput:
+    """필드·타입·판정값과 위험한 단정 표현을 검증한다."""
+    model = ClaimEvidenceOutput.model_validate(dict(output))
+    generated_text = "\n".join(
+        [model.ce_claim_summary, model.ce_draft_summary, *model.ce_risk_flags]
+    )
+    used = [expression for expression in UNSAFE_ASSERTIONS if expression in generated_text]
+    if used:
+        raise ValueError(f"1st_agent 출력에 허용되지 않은 단정 표현이 있습니다: {used}")
+    return model
+
+
+def validate_state_update(
+    before: Mapping[str, Any], after: Mapping[str, Any]
+) -> None:
+    """기존 비-ce_ 값을 변경하거나 새 비-ce_ 값을 작성하지 않았는지 확인한다."""
+    for key, value in after.items():
+        if not key.startswith("ce_") and (key not in before or before[key] != value):
+            raise ValueError(f"1st_agent가 작성할 수 없는 필드입니다: {key}")
+    missing = [key for key in before if key not in after]
+    if missing:
+        raise ValueError(f"1st_agent가 기존 state 필드를 제거했습니다: {missing}")

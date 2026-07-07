@@ -1,7 +1,20 @@
-"""claim_evidence_agent가 읽고 쓰는 state 타입을 정의할 모듈.
+"""1st_agent가 읽고 쓰는 최소 state 계약."""
 
-읽기 대상: input_ 공용 입력과 합의된 보조 정보.
-쓰기 대상: ce_chart_facts, ce_claim_summary, ce_strong_expressions, ce_risk_flags, ce_draft_judgement, ce_draft_summary.
-제약: input_, ig_, vc_, merge_, runtime_ 값은 작성하지 않는다.
-구현 상태: TODO - 팀 합의 후 TypedDict 또는 동등한 타입으로 구현.
-"""
+from typing import NotRequired, TypedDict
+
+from first_agent.schemas.claim_evidence_output import CeJudgement
+
+
+class ClaimEvidenceState(TypedDict):
+    input_news_title: str
+    input_news_body: str
+    input_chart_image_path: str
+    input_chart_text: str
+    input_source_text: str
+
+    ce_chart_facts: NotRequired[list[str]]
+    ce_claim_summary: NotRequired[str]
+    ce_strong_expressions: NotRequired[list[str]]
+    ce_risk_flags: NotRequired[list[str]]
+    ce_draft_judgement: NotRequired[CeJudgement]
+    ce_draft_summary: NotRequired[str]

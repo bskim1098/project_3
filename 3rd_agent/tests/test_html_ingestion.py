@@ -20,6 +20,7 @@ from frontend.html_ingestion import (
     download_image_from_url,
     prefill_form_from_html_content,
     read_html_from_upload,
+    select_chart_image_candidates,
     summarize_extraction,
     _SafeRedirectHandler,
     _normalize_html_before_parse,
@@ -68,6 +69,57 @@ class FakeResponse:
 
 
 class HTMLIngestionTests(unittest.TestCase):
+    def test_chart_filter_excludes_news_photo_reporter_and_advertisement(self):
+        html = """
+        <html><body><h1>경제 전망 기사</h1><article>
+        <p>산업 전망과 주요 지표 변화를 설명하는 첫 번째 기사 문단입니다.</p>
+        <p>수출 증감률과 성장률 전망을 비교하는 두 번째 기사 문단입니다.</p>
+        <figure><img src="https://img.test/chart.jpg" width="800" height="500"
+          alt="2025년 산업별 수출 증감률 전망 그래프"><figcaption>단위: %, 출처: 산업연구원</figcaption></figure>
+        <figure><img src="https://img.test/port.jpg" width="800" height="500"
+          alt="부산항 컨테이너 자료사진"><figcaption>연합뉴스 자료사진</figcaption></figure>
+        <div class="reporter profile"><img src="https://img.test/reporter.jpg" width="160" height="160" alt="김기자 기자 프로필"></div>
+        <div class="advert banner"><img src="https://img.test/banner.jpg" width="800" height="200" alt="광고 배너"></div>
+        </article></body></html>
+        """
+
+        blocks = extract_text_blocks_from_html(html, "https://news.test/article/1")
+        selected = select_chart_image_candidates(blocks["image_candidates"])
+
+        self.assertEqual(1, len(selected))
+        self.assertEqual("https://img.test/chart.jpg", selected[0]["url"])
+        self.assertTrue(selected[0]["selection_reasons"])
+
+    def test_photo_word_does_not_override_explicit_chart_without_photo_context(self):
+        candidates = [
+            {
+                "url": "https://img.test/chart.jpg",
+                "alt": "고용률 추이 그래프",
+                "caption": "단위: %",
+                "label": "고용률 추이 그래프",
+                "likely_chart": True,
+                "chart_score": 8,
+                "selection_reasons": ["그래프 표현"],
+                "exclusion_reasons": [],
+            }
+        ]
+        self.assertEqual(candidates, select_chart_image_candidates(candidates))
+
+    def test_article_metadata_title_wins_over_site_brand_h1(self):
+        html = """
+        <html><head>
+        <meta property="og:site_name" content="경향신문">
+        <meta property="og:title" content="대선 투표율로 본 ‘정치 참여’ - 경향신문">
+        </head><body>
+        <header><h1>창간 80주년 경향신문</h1></header>
+        <article><p>여성 투표율과 정치 참여 변화를 분석한 기사 본문입니다.</p></article>
+        </body></html>
+        """
+
+        blocks = extract_text_blocks_from_html(html)
+
+        self.assertEqual("대선 투표율로 본 ‘정치 참여’", blocks["title"])
+
     def test_malformed_tracking_iframe_is_removed_before_dom_parse(self):
         """변경 회귀: 닫히지 않은 noscript iframe이 이후 기사 DOM을 삼키지 않는다."""
         html = (FIXTURE_DIR / "malformed_noscript_iframe_article.html").read_text(
